@@ -1,0 +1,17 @@
+{
+  "name": "gemini",
+  "version": "1.0.0",
+  "description": "",
+  "main": "cli.js",
+  "bin": {
+    "gemini": "./cli.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.X.X",
+    "chalk": "^4.1.2",
+    "inquirer": "^8.2.7",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "ora": "^5.4.1"
+  }
+}

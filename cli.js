@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { program } = require("commander");
+const { GoogleGenerativeAI, SchemaType } = require("@google/generative-ai");
 const fs = require("fs").promises;
 const path = require("path");
+const { glob } = require("glob");
 const chalk = require("chalk");
 const ora = require("ora");
+const boxen = require("boxen");
+const gradient = require("gradient-string");
 const { marked } = require("marked");
 const { markedTerminal } = require("marked-terminal");
 const inquirer = require("inquirer");
@@ -22,6 +26,7 @@ marked.use(markedTerminal({
 // --- КОНФИГУРАЦИЯ И ЛИМИТЫ ---
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const STATS_FILE = path.join(__dirname, 'gemini-usage.json');
+const CONFIG_FILE = path.join(__dirname, 'gemini-config.json');
 
 const MODELS_CONFIG = {
   "flash": {
@@ -51,19 +56,49 @@ const MODELS_CONFIG = {
   }
 };
 
-const systemInstruction = `Ты — экспертный CLI-помощник.
-
-ВАЖНО: Создавай файлы ТОЛЬКО если пользователь явно просит! Например:
-- "напиши функцию" → просто выведи код
-- "создай файл config.js" → используй формат <file>
-- "сделай index.html" → используй формат <file>
-
-Если нужно создать файл, используй формат:
-<file path="путь/к/файлу.расширение">содержимое файла</file>
-
-Не придумывай сохранение файлов без явного запроса!`;
+const systemInstructionBase = `Ты — экспертный CLI-помощник.`;
 
 // --- ЛОГИКА ---
+
+async function processSavedFiles(filesArray, isDryRun) {
+  if (!filesArray || filesArray.length === 0) {
+    console.log(chalk.yellow(`ℹ️  Файлы для сохранения не предложены.`));
+    return;
+  }
+  for (const file of filesArray) {
+    const rawPath = file.path;
+    const fileContent = file.content;
+    const safePath = sanitizeFilePath(rawPath);
+    if (!safePath) continue;
+    if (isDryRun) { console.log(chalk.cyan(`[dry-run] Сохранил бы: ${rawPath}`)); continue; }
+    try {
+      await fs.mkdir(path.dirname(safePath), { recursive: true });
+      await fs.writeFile(safePath, fileContent, 'utf8');
+      console.log(chalk.green(`💾 Сохранен: `) + chalk.bold(rawPath));
+    } catch (err) {
+      console.error(chalk.red(`❌ Ошибка сохранения ${rawPath}:`), err.message);
+    }
+  }
+}
+
+async function getDefaultModel() {
+  try {
+    const data = await fs.readFile(CONFIG_FILE, 'utf8');
+    return JSON.parse(data).defaultModel || "flash";
+  } catch (e) {
+    return "flash";
+  }
+}
+
+async function setDefaultModel(modelKey) {
+  let config = {};
+  try {
+    const data = await fs.readFile(CONFIG_FILE, 'utf8');
+    config = JSON.parse(data);
+  } catch (e) {}
+  config.defaultModel = modelKey;
+  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+}
 
 async function updateAndGetUsage(modelKey, tokenCount = 0) {
   let stats = { lastReset: new Date().toDateString(), tokens: {}, requests: {} };
@@ -90,7 +125,7 @@ async function updateAndGetUsage(modelKey, tokenCount = 0) {
 async function scanModels() {
   const spinner = ora(chalk.cyan('Запрашиваю доступные модели у Google...')).start();
   try {
-    const key = getApiKey();
+    const key = await getApiKey();
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}&pageSize=100`);
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();
@@ -118,16 +153,18 @@ async function scanModels() {
   setTimeout(() => process.exit(0), 100);
 }
 
-function getApiKey() {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    console.error(chalk.red("❌ Ошибка: GEMINI_API_KEY не найден."));
-    process.exit(1);
-  }
-  return key;
-}
+async function getApiKey() {
+  if (process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+  try {
+    const data = await fs.readFile(CONFIG_FILE, 'utf8');
+    const config = JSON.parse(data);
+    if (config.apiKey) return config.apiKey;
+  } catch (e) {}
 
-const genAI = new GoogleGenerativeAI(getApiKey());
+  console.error(chalk.red("\n❌ Ошибка: API ключ не найден."));
+  console.log(chalk.gray(`Пожалуйста, установите ключ с помощью команды: ${chalk.cyan('gemini --set-key "ваш_ключ"')}\n`));
+  process.exit(1);
+}
 
 function sanitizeFilePath(rawPath) {
   const target = path.resolve(rawPath);
@@ -141,6 +178,26 @@ async function readStdin() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function getMimeType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes = {
+    '.png': 'image/png',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif',
+    '.pdf': 'application/pdf',
+    '.js': 'text/plain', // For LLMs, mostly text/plain is safe for code
+    '.html': 'text/html',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.md': 'text/markdown',
+    '.csv': 'text/csv'
+  };
+  return mimeTypes[ext] || 'text/plain';
 }
 
 async function showStats(modelKey = null) {
@@ -198,7 +255,7 @@ async function showStats(modelKey = null) {
       }
 
       if (!hasData) {
-        console.log(chalk.yellow("Нет данных. Сделайте первый запрос с помощью: node cli.js"));
+        console.log(chalk.yellow("Нет данных. Сделайте первый запрос с помощью: gemini \"запрос\""));
       } else {
         console.log(chalk.gray(`─`.repeat(60)));
         console.log(chalk.yellow.bold(`ИТОГО:     │ ${totalRequests.toString().padEnd(3)} запросов │ ${totalTokens.toString().padEnd(6)} токенов │ $${totalCost.toFixed(4)}`));
@@ -210,56 +267,86 @@ async function showStats(modelKey = null) {
   }
 }
 
-function showHelp() {
-  console.log(chalk.magenta.bold("\n🤖 GEMINI CLI HELPER — ПОЛНАЯ СПРАВКА\n"));
-  console.log(chalk.cyan.bold("Команды:"));
-  console.log(`  gemini "запрос"                ${chalk.gray("- Обычный чат")}`);
-  console.log(`  gemini "запрос" --save         ${chalk.gray("- Запрос + сохранение файлов")}`);
-  console.log(`  gemini --scan                  ${chalk.gray("- Проверить доступные модели Google")}`);
-  console.log(`  gemini --stats                 ${chalk.gray("- Показать статистику за день")}`);
-  console.log(`  gemini --stats <model>         ${chalk.gray("- Статистика по одной модели")}`);
-  console.log(chalk.cyan.bold("Флаги:"));
-  console.log(`  -c, --config       ${chalk.gray("- Выбор модели через меню стрелками")}`);
-  console.log(`  -m, --model <key>  ${chalk.gray("- Указать модель (flash, lite, gemma, research, vision)")}`);
-  console.log(`  --save             ${chalk.gray("- Создавать файлы из ответов")}`);
-  console.log(`  -d, --dry-run      ${chalk.gray("- Показать файлы без сохранения")}`);
-  console.log(`  -h, --help         ${chalk.gray("- Показать эту справку")}`);
-}
-
 async function run() {
-  const args = process.argv.slice(2);
-  let dryRun = false, saveFiles = false, selectedModelKey = "flash";
-  const positional = [];
+  program
+    .name('gemini')
+    .description(gradient.mind("🤖 GEMINI CLI HELPER — Мощный помощник в вашем терминале"))
+    .usage('[запрос и файлы] [флаги]')
+    .option('-m, --model <key>', 'Использовать конкретную модель')
+    .option('-c, --config', 'Выбрать и СОХРАНИТЬ модель по умолчанию')
+    .option('-i, --interactive', 'Интерактивный режим чата')
+    .option('--save', 'Разрешить сохранение файлов (Structured Outputs)')
+    .option('-d, --dry-run', 'Режим симуляции (dry-run)')
+    .option('--set-key <key>', 'Сохранить API ключ')
+    .option('--scan', 'Показать доступные модели')
+    .option('--stats [model]', 'Показать статистику использования')
+    .helpOption('-h, --help', 'Показать справку')
+    .addHelpText('before', `\n${gradient.fruit.multiline(
+      "  ____ _____ __  __ ___ _   _ ___ \n" +
+      " / ___| ____|  \\/  |_ _| \\ | |_ _| \n" +
+      "| |  _|  _| | |\\/| || ||  \\| || |  \n" +
+      "| |_| | |___| |  | || || |\\  || |  \n" +
+      " \\____|_____|_|  |_|___|_| \\_|___| \n"
+    )}\n`)
+    .addHelpText('after', `
+${chalk.cyan.bold("Доступные модели:")}
+  ${chalk.yellow('flash'.padEnd(8))} → gemini-3-flash-preview (Основная, быстрая)
+  ${chalk.yellow('lite'.padEnd(8))} → gemini-3.1-flash-lite (Лимит 500/день)
+  ${chalk.yellow('gemma'.padEnd(8))} → gemma-4-31b-it (Лимит 14400/день)
+  ${chalk.yellow('research'.padEnd(8))} → deep-research-pro (Глубокий поиск)
+  ${chalk.yellow('vision'.padEnd(8))} → gemini-3.1-flash-image (Анализ изображений)
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--scan') { await scanModels(); return; }
-    if (arg === '--stats') {
-      const modelKey = args[i+1] && !args[i+1].startsWith('-') ? args[i+1] : null;
-      await showStats(modelKey);
-      return;
-    }
-    if (arg === '-h' || arg === '--help') { showHelp(); process.exit(0); }
+${chalk.cyan.bold("Примеры:")}
+  ${chalk.green("gemini")} "Как дела?"
+  ${chalk.green("gemini")} "Проверь код" index.js ${chalk.yellow("--save")}
+  ${chalk.green("gemini")} ${chalk.yellow("--stats")}
+  ${chalk.green("gemini")} ${chalk.yellow("-i")}
+`);
 
-    if (arg === '-c' || arg === '--config') {
-      const { modelKey } = await inquirer.prompt([{
-        type: 'list', name: 'modelKey', message: 'Выберите модель:',
-        choices: Object.keys(MODELS_CONFIG).map(k => ({
-          name: `${chalk.bold(k.padEnd(8))} | ${MODELS_CONFIG[k].desc}`, value: k
-        }))
-      }]);
-      selectedModelKey = modelKey;
-      continue;
-    }
-    if ((arg === '-m' || arg === '--model') && args[i+1]) { selectedModelKey = args[i+1]; i++; continue; }
-    if (arg === '--save') saveFiles = true;
-    else if (arg === '-d' || arg === '--dry-run') dryRun = true;
-    else positional.push(arg);
+  program.parse(process.argv);
+  const options = program.opts();
+  const positional = program.args;
+
+  let dryRun = !!options.dryRun;
+  let saveFiles = !!options.save;
+  let interactiveMode = !!options.interactive;
+  let selectedModelKey = await getDefaultModel();
+
+  if (options.setKey) {
+    let config = {};
+    try { config = JSON.parse(await fs.readFile(CONFIG_FILE, 'utf8')); } catch (e) {}
+    config.apiKey = options.setKey;
+    await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+    console.log(chalk.green(`✅ API ключ успешно сохранён!`));
+    if (positional.length === 0 && !interactiveMode) return;
   }
+
+  if (options.scan) { await scanModels(); return; }
+  if (options.stats !== undefined) {
+    await showStats(options.stats === true ? null : options.stats);
+    return;
+  }
+
+  if (options.config) {
+    const { modelKey } = await inquirer.prompt([{
+      type: 'list', name: 'modelKey', message: 'Выберите модель по умолчанию:',
+      choices: Object.keys(MODELS_CONFIG).map(k => ({
+        name: `${chalk.bold(k.padEnd(8))} | ${MODELS_CONFIG[k].desc}`, value: k
+      }))
+    }]);
+    selectedModelKey = modelKey;
+    await setDefaultModel(modelKey);
+    console.log(chalk.green(`✅ Модель `) + chalk.bold.cyan(selectedModelKey) + chalk.green(` сохранена как модель по умолчанию.\n`));
+    if (positional.length === 0 && !interactiveMode) return;
+  }
+
+  if (options.model) { selectedModelKey = options.model; }
 
   const stdinContent = await readStdin();
   const inputSource = positional.length > 0 ? positional : (stdinContent ? [stdinContent] : []);
-  if (inputSource.length === 0) { showHelp(); process.exit(1); }
+  if (inputSource.length === 0 && !interactiveMode) { 
+    program.help(); 
+  }
 
   let prompt = "";
   const filesToProcess = [];
@@ -267,19 +354,170 @@ async function run() {
 
   for (const arg of inputSource) {
     if (promptStarted) { prompt += " " + arg; continue; }
+    
     try {
-      const stats = await fs.stat(arg);
-      if (stats.isFile()) filesToProcess.push(arg);
-      else { promptStarted = true; prompt += arg; }
-    } catch { promptStarted = true; prompt += arg; }
+      // Пытаемся раскрыть как глоб (например *.js)
+      const matchedFiles = await glob(arg, { nodir: true, windowsPathsNoEscape: true });
+      
+      if (matchedFiles.length > 0) {
+        filesToProcess.push(...matchedFiles);
+      } else {
+        // Если глоб ничего не нашел, проверяем прямое наличие файла
+        try {
+          const stats = await fs.stat(arg);
+          if (stats.isFile()) filesToProcess.push(arg);
+          else { promptStarted = true; prompt += arg; }
+        } catch {
+          // Если и файла нет, это часть промпта
+          promptStarted = true;
+          prompt += arg;
+        }
+      }
+    } catch (e) {
+      promptStarted = true;
+      prompt += arg;
+    }
   }
 
+  const apiKey = await getApiKey();
+  const genAI = new GoogleGenerativeAI(apiKey);
+
   const modelCfg = MODELS_CONFIG[selectedModelKey] || MODELS_CONFIG["flash"];
+  
+  const generationConfig = { maxOutputTokens: 8192 };
+  let currentSystemInstruction = systemInstructionBase;
+
+  if (saveFiles || dryRun) {
+    generationConfig.responseMimeType = "application/json";
+    generationConfig.responseSchema = {
+      type: SchemaType.OBJECT,
+      properties: {
+        text: { type: SchemaType.STRING, description: "Ответ для пользователя (текст в формате Markdown)" },
+        files: {
+          type: SchemaType.ARRAY,
+          description: "Список файлов для создания (оставь пустым, если файлы не требуются)",
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              path: { type: SchemaType.STRING, description: "Относительный путь к файлу" },
+              content: { type: SchemaType.STRING, description: "Содержимое файла (исходный код)" }
+            },
+            required: ["path", "content"]
+          }
+        }
+      },
+      required: ["text", "files"]
+    };
+    currentSystemInstruction = `${systemInstructionBase}\nВАЖНО: Всегда возвращай валидный JSON. Твой текстовый ответ помести в поле "text". Если пользователь просит создать файлы, добавь их в массив "files". Если файлы не нужны, массив "files" должен быть пустым.`;
+  } else {
+    currentSystemInstruction = `${systemInstructionBase}\nВыводи текст как обычно (Markdown). Файлы сохранять не требуется.`;
+  }
+
   const model = genAI.getGenerativeModel({
     model: modelCfg.id,
-    systemInstruction,
+    systemInstruction: currentSystemInstruction,
+    generationConfig,
     tools: [{ google_search: {} }]
   });
+
+  if (interactiveMode) {
+    const chat = model.startChat({ history: [] });
+
+    console.log(chalk.magenta.bold('\n💬 Режим интерактивного чата включен (введите "exit" для выхода)'));
+    console.log(chalk.gray(`Модель: ${selectedModelKey}\n`));
+
+    if (prompt || filesToProcess.length > 0) {
+      console.log(chalk.bgBlue.black.bold(" ВЫ ") + " " + (prompt || chalk.gray("(только файлы)")));
+      const spinner = ora({ text: chalk.magenta('Ожидание ответа...'), color: 'magenta' }).start();
+      try {
+        const fileParts = [];
+        for (const f of filesToProcess) {
+          const data = await fs.readFile(f);
+          fileParts.push({ inlineData: { data: data.toString("base64"), mimeType: getMimeType(f) }});
+        }
+        
+        const messageParts = filesToProcess.length > 0 ? [prompt, ...fileParts] : prompt;
+        let responseText = "";
+        let usageTokenCount = 0;
+        if (saveFiles || dryRun) {
+          const result = await chat.sendMessage(messageParts);
+          spinner.succeed(chalk.green('Ответ получен:\n'));
+          responseText = result.response.text();
+          usageTokenCount = result.response.usageMetadata?.totalTokenCount || 0;
+          try {
+            const parsed = JSON.parse(responseText);
+            console.log(boxen(marked(parsed.text), { padding: 1, borderColor: 'magenta', borderStyle: 'round' }));
+            await processSavedFiles(parsed.files, dryRun);
+          } catch(e) { console.log(marked(responseText) + "\n"); }
+        } else {
+          const result = await chat.sendMessageStream(messageParts);
+          spinner.succeed(chalk.green('Ответ:\n'));
+          process.stdout.write(chalk.bgMagenta.black.bold(" GEMINI ") + " ");
+          for await (const chunk of result.stream) {
+            const chunkText = chunk.text();
+            responseText += chunkText;
+            process.stdout.write(chunkText);
+          }
+          console.log("\n");
+          const response = await result.response;
+          usageTokenCount = response.usageMetadata?.totalTokenCount || 0;
+        }
+        await updateAndGetUsage(selectedModelKey, usageTokenCount);
+      } catch (e) {
+        spinner.fail(chalk.red('Ошибка'));
+        console.error(chalk.red("❌:"), e.message);
+      }
+    }
+
+    while (true) {
+      const { userPrompt } = await inquirer.prompt([{
+        type: 'input',
+        name: 'userPrompt',
+        prefix: '',
+        message: chalk.bgBlue.black.bold(" ВЫ "),
+      }]);
+
+      if (!userPrompt || userPrompt.trim() === '') continue;
+      if (userPrompt.trim().toLowerCase() === 'exit' || userPrompt.trim().toLowerCase() === 'quit') {
+        console.log(chalk.gray('Завершение чата.'));
+        break;
+      }
+
+      const spinner = ora({ text: chalk.magenta('Ожидание ответа...'), color: 'magenta' }).start();
+      try {
+        let responseText = "";
+        let usageTokenCount = 0;
+        if (saveFiles || dryRun) {
+          const result = await chat.sendMessage(userPrompt);
+          spinner.succeed(chalk.green('Ответ получен:\n'));
+          responseText = result.response.text();
+          usageTokenCount = result.response.usageMetadata?.totalTokenCount || 0;
+          try {
+            const parsed = JSON.parse(responseText);
+            console.log(boxen(marked(parsed.text), { padding: 1, borderColor: 'magenta', borderStyle: 'round' }));
+            await processSavedFiles(parsed.files, dryRun);
+          } catch(e) { console.log(marked(responseText) + "\n"); }
+        } else {
+          const result = await chat.sendMessageStream(userPrompt);
+          spinner.succeed(chalk.green('Ответ:\n'));
+          process.stdout.write(chalk.bgMagenta.black.bold(" GEMINI ") + " ");
+          for await (const chunk of result.stream) {
+            const chunkText = chunk.text();
+            responseText += chunkText;
+            process.stdout.write(chunkText);
+          }
+          console.log("\n");
+          const response = await result.response;
+          usageTokenCount = response.usageMetadata?.totalTokenCount || 0;
+        }
+        await updateAndGetUsage(selectedModelKey, usageTokenCount);
+      } catch (e) {
+        spinner.fail(chalk.red('Ошибка'));
+        console.error(chalk.red("❌:"), e.message);
+      }
+    }
+    return;
+  }
 
   const spinner = ora({ text: chalk.magenta(`Gemini [${selectedModelKey}] на связи...`), color: 'magenta' }).start();
 
@@ -287,58 +525,60 @@ async function run() {
     const fileParts = [];
     for (const f of filesToProcess) {
       const data = await fs.readFile(f);
-      fileParts.push({ inlineData: { data: data.toString("base64"), mimeType: "text/plain" }});
+      const mimeType = getMimeType(f);
+      fileParts.push({ inlineData: { data: data.toString("base64"), mimeType }});
     }
 
-    const result = await model.generateContent([prompt, ...fileParts]);
-    const responseText = result.response.text();
-    const usage = result.response.usageMetadata;
-    
-    spinner.succeed(chalk.green('Готово!\n'));
-    console.log(marked.parse(responseText));
+    let responseText = "";
+    let usageTokenCount = 0;
+    let promptTokenCount = '?';
+    let candidatesTokenCount = '?';
 
-    const stats = await updateAndGetUsage(selectedModelKey, usage?.totalTokenCount || 0);
+    if (saveFiles || dryRun) {
+      const result = await model.generateContent([prompt, ...fileParts]);
+      spinner.succeed(chalk.green('Готово!\n'));
+      responseText = result.response.text();
+      const usage = result.response.usageMetadata;
+      usageTokenCount = usage?.totalTokenCount || 0;
+      promptTokenCount = usage?.promptTokenCount || '?';
+      candidatesTokenCount = usage?.candidatesTokenCount || '?';
+      try {
+        const parsed = JSON.parse(responseText);
+        console.log(boxen(marked(parsed.text), { padding: 1, borderColor: 'magenta', borderStyle: 'round', title: 'GEMINI RESPONSE', titleAlignment: 'center' }));
+        await processSavedFiles(parsed.files, dryRun);
+      } catch(e) { console.log(marked(responseText) + "\n"); }
+    } else {
+      const result = await model.generateContentStream([prompt, ...fileParts]);
+      spinner.succeed(chalk.green('Готово!\n'));
+      process.stdout.write(chalk.bgMagenta.black.bold(" GEMINI ") + " ");
+      for await (const chunk of result.stream) {
+        const chunkText = chunk.text();
+        responseText += chunkText;
+        process.stdout.write(chunkText);
+      }
+      console.log("\n");
+      const response = await result.response;
+      const usage = response.usageMetadata;
+      usageTokenCount = usage?.totalTokenCount || 0;
+      promptTokenCount = usage?.promptTokenCount || '?';
+      candidatesTokenCount = usage?.candidatesTokenCount || '?';
+    }
+
+    const stats = await updateAndGetUsage(selectedModelKey, usageTokenCount);
     const totalTokens = stats.tokens[selectedModelKey] || 0;
     const totalRequests = stats.requests[selectedModelKey] || 0;
     
-    // Примерный расчет (flash обычно дороже)
     const tokenPricePer1k = selectedModelKey === "gemma" ? 0.03 : (selectedModelKey === "lite" ? 0.075 : 0.15);
     const estimatedCost = (totalTokens / 1000) * tokenPricePer1k;
 
-    console.log(chalk.gray(`─`.repeat(50)));
-    console.log(chalk.cyan(`📊 СТАТИСТИКА [${selectedModelKey}]:`));
-    console.log(chalk.gray(`   Запрос:       ${usage?.promptTokenCount || '?'} входных + ${usage?.candidatesTokenCount || '?'} выходных = ${usage?.totalTokenCount || '?'} токенов`));
-    console.log(chalk.gray(`   За день:      ${totalTokens} токенов (${totalRequests} запросов)`));
-    console.log(chalk.gray(`   Примерная стоимость: ~$${estimatedCost.toFixed(4)}`));
-    console.log(chalk.gray(`─`.repeat(50) + '\n'));
-
-    // Обработка файлов только если явно указан флаг --save
-    if (saveFiles) {
-      const fileRegex = /<file path="([^"]+)">([\s\S]*?)<\/file>/g;
-      let match;
-      let foundFiles = false;
-      while ((match = fileRegex.exec(responseText)) !== null) {
-        foundFiles = true;
-        const rawPath = match[1], fileContent = match[2].trim(), safePath = sanitizeFilePath(rawPath);
-        if (!safePath) continue;
-        if (dryRun) { console.log(chalk.cyan(`[dry-run] Сохранил бы: ${rawPath}`)); continue; }
-        try {
-          await fs.mkdir(path.dirname(safePath), { recursive: true });
-          await fs.writeFile(safePath, fileContent, 'utf8');
-          console.log(chalk.green(`💾 Сохранен: `) + chalk.bold(rawPath));
-        } catch (err) {
-          console.error(chalk.red(`❌ Ошибка сохранения ${rawPath}:`), err.message);
-        }
-      }
-      if (!foundFiles) {
-        console.log(chalk.yellow(`ℹ️  В ответе нет блоков <file> для сохранения`));
-      }
-    } else {
-      // Показать уведомление если в ответе есть файлы и --save не указан
-      if (responseText.includes('<file path=')) {
-        console.log(chalk.yellow(`ℹ️  Ответ содержит файлы. Используйте --save для сохранения.`));
-      }
-    }
+    const statsBox = boxen(
+      `${chalk.cyan.bold(`📊 СТАТИСТИКА [${selectedModelKey}]`)}\n\n` +
+      `${chalk.gray(`Запрос:       `)}${chalk.white(`${promptTokenCount} + ${candidatesTokenCount} = ${usageTokenCount} токенов`)}\n` +
+      `${chalk.gray(`За день:      `)}${chalk.white(`${totalTokens} токенов (${totalRequests} запросов)`)}\n` +
+      `${chalk.yellow.bold(`Стоимость:    ~$${estimatedCost.toFixed(4)}`)}`,
+      { padding: 1, margin: { top: 1 }, borderStyle: 'round', borderColor: 'cyan' }
+    );
+    console.log(statsBox);
   } catch (error) {
     spinner.fail(chalk.red('Ошибка'));
     console.error(chalk.red("❌:"), error.message);

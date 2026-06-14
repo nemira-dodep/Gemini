@@ -21,6 +21,7 @@ yarn.lock
 
 # Generated/temporary files
 gemini-usage.json
+gemini-config.json
 *.log
 .cache/
 

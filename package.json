@@ -6,8 +6,16 @@
   "bin": {
     "gemini": "./cli.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check cli.js && node --check script.js",
+    "doctor": "node cli.js --doctor",
+    "test": "npm run check && node test/cli.test.js"
+  },
   "dependencies": {
-    "@google/generative-ai": "^0.X.X",
+    "@google/generative-ai": "^0.24.1",
     "boxen": "^8.0.1",
     "chalk": "^4.1.2",
     "commander": "^14.0.3",

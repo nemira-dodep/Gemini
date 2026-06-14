@@ -1,4 +1,3 @@
-
 #!/usr/bin/env node
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -107,11 +106,3 @@ async function main() {
 }
 
 main();
-
-const genAI = new GoogleGenerativeAI(getApiKey());
-const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-
-const systemInstruction = `Ты — экспертный CLI-помощник.
-Если нужно создать или изменить файл, используй формат:
-<file path="относительный/путь/имя.расширение">
-содержимое файла

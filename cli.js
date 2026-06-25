@@ -38,8 +38,8 @@ const RETRY_BASE_DELAY_MS = 600;
 const GOOGLE_KNOWN_MODEL_META = {
   "gemini-3.1-flash-lite": { alias: "lite", dailyLimit: 500, autoFallback: true, supportsSearch: false },
   "gemini-3.1-flash-lite-preview": { alias: "lite-preview", dailyLimit: 500, autoFallback: true, supportsSearch: false },
-  "gemma-4-31b-it": { alias: "gemma", dailyLimit: 1500, autoFallback: true, supportsSearch: false },
-  "gemma-4-26b-a4b-it": { alias: "gemma-26b", dailyLimit: 1500, autoFallback: true, supportsSearch: false },
+  "gemma-4-31b-it": { alias: "gemma", dailyLimit: 1500, autoFallback: false, supportsSearch: false },
+  "gemma-4-26b-a4b-it": { alias: "gemma-26b", dailyLimit: 1500, autoFallback: false, supportsSearch: false },
   "gemini-3.5-flash": { alias: "flash-3-5", dailyLimit: 20, autoFallback: true, supportsSearch: false },
   "gemini-3-flash-preview": { alias: "flash", dailyLimit: 20, autoFallback: true, supportsSearch: false },
   "gemini-2.5-flash-lite": { alias: "flash-lite-2-5", dailyLimit: 20, autoFallback: true, supportsSearch: true },
@@ -57,6 +57,44 @@ const GOOGLE_KNOWN_MODEL_META = {
   "deep-research-preview-04-2026": { dailyLimit: 0, autoFallback: false, chat: false },
   "deep-research-max-preview-04-2026": { dailyLimit: 0, autoFallback: false, chat: false }
 };
+const PROVIDER_PRESETS = {
+  google: {
+    label: "Google Gemini",
+    type: "google",
+    env: "GEMINI_API_KEY",
+    baseURL: "https://generativelanguage.googleapis.com",
+    keyUrl: "https://aistudio.google.com/app/apikey",
+    docsUrl: "https://ai.google.dev/gemini-api/docs",
+    note: "Основной провайдер Gemini; ключ можно вставить в /settings или GEMINI_API_KEY."
+  },
+  deepseek: {
+    label: "DeepSeek",
+    type: "openai-compatible",
+    env: "DEEPSEEK_API_KEY",
+    baseURL: "https://api.deepseek.com",
+    keyUrl: "https://platform.deepseek.com/api_keys",
+    docsUrl: "https://api-docs.deepseek.com/",
+    note: "OpenAI-compatible API. В новых docs основные модели: deepseek-v4-flash и deepseek-v4-pro."
+  },
+  qwen: {
+    label: "Qwen / Alibaba Cloud Model Studio",
+    type: "openai-compatible",
+    env: "DASHSCOPE_API_KEY",
+    baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    keyUrl: "https://help.aliyun.com/zh/model-studio/get-api-key",
+    docsUrl: "https://help.aliyun.com/zh/model-studio/",
+    note: "OpenAI-compatible endpoint DashScope. Ключ создаётся в Alibaba Cloud Model Studio / Bailian."
+  },
+  openaiCompatible: {
+    label: "OpenAI-compatible",
+    type: "openai-compatible",
+    env: "OPENAI_COMPATIBLE_API_KEY",
+    baseURL: "",
+    keyUrl: "",
+    docsUrl: "",
+    note: "Для любого сервиса с /chat/completions: укажите API key, base URL и model id."
+  }
+};
 
 let MODELS_CONFIG = {
   "flash": {
@@ -71,11 +109,45 @@ let MODELS_CONFIG = {
     desc: "☁️ Высокие лимиты (500/день). Для рутины и тестов.",
     dailyLimit: 500
   },
+  "flash-3-5": {
+    provider: "google",
+    id: "gemini-3.5-flash",
+    desc: "⚡ Gemini 3.5 Flash. Запасной текстовый fallback.",
+    dailyLimit: 20,
+    supportsSearch: false,
+    autoFallback: true
+  },
+  "flash-lite-2-5": {
+    provider: "google",
+    id: "gemini-2.5-flash-lite",
+    desc: "⚡ Gemini 2.5 Flash Lite. Запасной текстовый fallback.",
+    dailyLimit: 20,
+    supportsSearch: true,
+    autoFallback: true
+  },
+  "flash-2-5": {
+    provider: "google",
+    id: "gemini-2.5-flash",
+    desc: "⚡ Gemini 2.5 Flash. Запасной текстовый fallback.",
+    dailyLimit: 20,
+    supportsSearch: true,
+    autoFallback: true
+  },
   "gemma": {
     provider: "google",
     id: "gemma-4-31b-it",
     desc: "📟 Огромные лимиты. Для массовой обработки текста.",
-    dailyLimit: 14400
+    dailyLimit: 1500,
+    supportsSearch: false,
+    autoFallback: false
+  },
+  "gemma-26b": {
+    provider: "google",
+    id: "gemma-4-26b-a4b-it",
+    desc: "📟 Gemma 4 26B. Доступна вручную через /model.",
+    dailyLimit: 1500,
+    supportsSearch: false,
+    autoFallback: false
   },
   "research": {
     provider: "google",
@@ -88,8 +160,45 @@ let MODELS_CONFIG = {
     id: "gemini-3.1-flash-image-preview",
     desc: "👁️ Анализ скриншотов, макетов и графиков.",
     dailyLimit: 20
+  },
+  "deepseek": {
+    provider: "deepseek",
+    id: "deepseek-v4-flash",
+    desc: "🌊 DeepSeek V4 Flash через OpenAI-compatible API.",
+    dailyLimit: 0,
+    supportsSearch: false,
+    supportsStructuredOutput: true,
+    autoFallback: true
+  },
+  "deepseek-pro": {
+    provider: "deepseek",
+    id: "deepseek-v4-pro",
+    desc: "🌊 DeepSeek V4 Pro через OpenAI-compatible API.",
+    dailyLimit: 0,
+    supportsSearch: false,
+    supportsStructuredOutput: true,
+    autoFallback: true
+  },
+  "qwen": {
+    provider: "qwen",
+    id: "qwen-plus",
+    desc: "☁️ Qwen Plus через Alibaba DashScope compatible API.",
+    dailyLimit: 0,
+    supportsSearch: false,
+    supportsStructuredOutput: true,
+    autoFallback: true
+  },
+  "qwen-max": {
+    provider: "qwen",
+    id: "qwen-max",
+    desc: "☁️ Qwen Max через Alibaba DashScope compatible API.",
+    dailyLimit: 0,
+    supportsSearch: false,
+    supportsStructuredOutput: true,
+    autoFallback: true
   }
 };
+const BUILTIN_MODELS_CONFIG = JSON.parse(JSON.stringify(MODELS_CONFIG));
 
 const systemInstructionBase = `Ты — экспертный CLI-помощник.`;
 const DEFAULT_SETTINGS = {
@@ -107,10 +216,23 @@ const DEFAULT_SETTINGS = {
     google: {
       apiKey: null,
       baseURL: "https://generativelanguage.googleapis.com"
+    },
+    deepseek: {
+      apiKey: null,
+      baseURL: "https://api.deepseek.com"
+    },
+    qwen: {
+      apiKey: null,
+      baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    },
+    openaiCompatible: {
+      apiKey: null,
+      baseURL: "",
+      model: ""
     }
   },
   autoFallback: true,
-  fallbackModels: ["lite", "gemma", "gemma-26b", "flash-3-5", "flash", "flash-lite-2-5", "flash-2-5"]
+  fallbackModels: ["lite", "flash-3-5", "flash", "flash-lite-2-5", "flash-2-5", "deepseek", "qwen"]
 };
 const MODEL_SYNC_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -178,6 +300,7 @@ function isAutoFallbackCandidate(modelKey) {
   const cfg = MODELS_CONFIG[modelKey];
   const id = String(cfg?.id || '').toLowerCase();
   if (!cfg) return false;
+  if (getProviderType(cfg.provider) === 'openai-compatible') return cfg.autoFallback !== false;
   const known = GOOGLE_KNOWN_MODEL_META[id];
   if (known?.autoFallback !== undefined) return known.autoFallback && (cfg.dailyLimit || 0) > 0;
   if (id.includes('image') || id.includes('tts') || id.includes('lyria')) return false;
@@ -199,14 +322,20 @@ function shouldIncludeDiscoveredModel(modelId = '') {
 
 function normalizeConfig(rawConfig = {}) {
   const config = { ...DEFAULT_SETTINGS, ...rawConfig };
-  config.providers = {
-    ...DEFAULT_SETTINGS.providers,
-    ...(rawConfig.providers || {})
-  };
-  config.providers.google = {
-    ...DEFAULT_SETTINGS.providers.google,
-    ...(rawConfig.providers?.google || {})
-  };
+  config.providers = {};
+  for (const [provider, defaults] of Object.entries(DEFAULT_SETTINGS.providers)) {
+    config.providers[provider] = {
+      ...defaults,
+      ...(rawConfig.providers?.[provider] || {})
+    };
+  }
+  for (const [provider, providerConfig] of Object.entries(rawConfig.providers || {})) {
+    config.providers[provider] = {
+      ...(PROVIDER_PRESETS[provider] ? { baseURL: PROVIDER_PRESETS[provider].baseURL } : {}),
+      ...(config.providers[provider] || {}),
+      ...providerConfig
+    };
+  }
 
   if (rawConfig.apiKey && !config.providers.google.apiKey) {
     config.providers.google.apiKey = rawConfig.apiKey;
@@ -218,6 +347,39 @@ function normalizeConfig(rawConfig = {}) {
     ? config.fallbackModels
     : DEFAULT_SETTINGS.fallbackModels;
   return config;
+}
+
+function getProviderPreset(provider) {
+  return PROVIDER_PRESETS[provider] || {
+    label: provider,
+    type: "openai-compatible",
+    env: `${provider.toUpperCase()}_API_KEY`,
+    baseURL: "",
+    keyUrl: "",
+    docsUrl: "",
+    note: "Пользовательский OpenAI-compatible провайдер."
+  };
+}
+
+function getProviderType(provider) {
+  return getProviderPreset(provider).type;
+}
+
+function getProviderConfig(config, provider) {
+  const preset = getProviderPreset(provider);
+  const savedConfig = config.providers?.[provider] || {};
+  const envKey = preset.env ? process.env[preset.env] : null;
+  return {
+    ...preset,
+    ...savedConfig,
+    apiKey: savedConfig.apiKey || envKey || null,
+    provider
+  };
+}
+
+function isProviderConfigured(config, provider) {
+  const providerConfig = getProviderConfig(config, provider);
+  return !!providerConfig.apiKey && (providerConfig.type === 'google' || !!providerConfig.baseURL);
 }
 
 async function readConfig() {
@@ -233,9 +395,12 @@ async function writeConfig(config) {
 
 function applyAvailableModels(config) {
   if (config?.availableModels && Object.keys(config.availableModels).length > 0) {
-    MODELS_CONFIG = normalizeModelCatalog(config.availableModels);
+    MODELS_CONFIG = {
+      ...normalizeModelCatalog(BUILTIN_MODELS_CONFIG),
+      ...normalizeModelCatalog(config.availableModels)
+    };
   } else {
-    MODELS_CONFIG = normalizeModelCatalog(MODELS_CONFIG);
+    MODELS_CONFIG = normalizeModelCatalog(BUILTIN_MODELS_CONFIG);
   }
 }
 
@@ -517,7 +682,10 @@ function hasLocalLimitRemaining(modelKey, stats) {
 
 function getFallbackChain(config = {}) {
   const configured = Array.isArray(config.fallbackModels) ? config.fallbackModels : [];
-  return [...new Set(configured)].filter(modelKey => MODELS_CONFIG[modelKey] && isAutoFallbackCandidate(modelKey));
+  return [...new Set(configured)].filter(modelKey => {
+    const cfg = MODELS_CONFIG[modelKey];
+    return cfg && isAutoFallbackCandidate(modelKey) && isProviderConfigured(config, cfg.provider || 'google');
+  });
 }
 
 function pickNextModel(currentModelKey, config = {}, stats = { requests: {} }, triedModels = []) {
@@ -585,6 +753,19 @@ function getModeLabel(saveFiles, dryRun) {
   return chalk.cyan("chat");
 }
 
+function getProviderStatusLine(config, provider) {
+  const preset = getProviderPreset(provider);
+  const connected = isProviderConfigured(config, provider);
+  return `${connected ? chalk.green('on ') : chalk.gray('off')} ${preset.label}`;
+}
+
+function getCompactFallbackChain(config) {
+  const chain = getFallbackChain(config);
+  if (chain.length === 0) return chalk.gray('off');
+  return chain.slice(0, 5).map(modelKey => chalk.yellow(modelKey)).join(chalk.gray(' -> ')) +
+    (chain.length > 5 ? chalk.gray(` -> +${chain.length - 5}`) : '');
+}
+
 function parseToggleArg(value, currentValue) {
   if (!value) return !currentValue;
   const normalized = value.toLowerCase();
@@ -612,6 +793,7 @@ function normalizeChatCommand(input) {
     '--models': '/models',
     '--scan': '/sync-models',
     '--doctor': '/doctor',
+    '--providers': '/providers',
     '--settings': '/settings',
     '-c': '/settings',
     '--config': '/settings',
@@ -647,15 +829,35 @@ async function showHomeScreen(modelKey, config, session) {
   const requests = stats.requests[modelKey] || 0;
   const tokens = stats.tokens[modelKey] || 0;
   const cfg = MODELS_CONFIG[modelKey];
+  const provider = cfg.provider || 'google';
+  const providerLabel = getProviderPreset(provider).label;
   const remaining = formatRemainingLimit(modelKey, requests);
+  const fallbackLine = config.autoFallback ? getCompactFallbackChain(config) : chalk.gray('off');
+  const providersLine = ['google', 'deepseek', 'qwen']
+    .map(providerKey => getProviderStatusLine(config, providerKey))
+    .join(chalk.gray('  |  '));
+  const modeBits = [
+    getModeLabel(session.saveFiles, session.dryRun),
+    session.searchEnabled && cfg.supportsSearch !== false ? chalk.cyan('search') : chalk.gray('no-search'),
+    config.autoFallback ? chalk.green('auto-fallback') : chalk.gray('manual-fallback')
+  ].join(chalk.gray(' / '));
   const body = [
-    `${chalk.bold("Model")}      ${chalk.yellow(modelKey)} ${chalk.gray(`(${cfg.id})`)}`,
-    `${chalk.bold("Mode")}       ${getModeLabel(session.saveFiles, session.dryRun)} ${chalk.gray(session.searchEnabled ? "search:on" : "search:off")}`,
-    `${chalk.bold("Today")}      ${requests} req · ${tokens} tokens · left ${remaining}`,
-    `${chalk.bold("Config")}     ${CONFIG_FILE}`,
+    `${chalk.magenta.bold('SESSION')}`,
+    `  ${chalk.bold('Model')}     ${chalk.yellow(modelKey)} ${chalk.gray(`(${cfg.id})`)}`,
+    `  ${chalk.bold('Provider')}  ${providerLabel}`,
+    `  ${chalk.bold('Mode')}      ${modeBits}`,
+    `  ${chalk.bold('Today')}     ${requests} req · ${tokens} tokens · left ${remaining}`,
     "",
-    `${chalk.gray("Slash commands:")} ${chalk.cyan("/model")} ${chalk.cyan("/settings")} ${chalk.cyan("/stats")} ${chalk.cyan("/save")} ${chalk.cyan("/dry")} ${chalk.cyan("/search")} ${chalk.cyan("/clear")} ${chalk.cyan("/help")} ${chalk.cyan("/exit")}`,
-    `${chalk.gray("Files:")} type ${chalk.cyan('/files README.md "*.js"')} before your next message`
+    `${chalk.magenta.bold('PROVIDERS')}`,
+    `  ${providersLine}`,
+    `  ${chalk.bold('Fallback')}  ${fallbackLine}`,
+    "",
+    `${chalk.magenta.bold('ACTIONS')}`,
+    `  ${chalk.cyan('/model')} choose model        ${chalk.cyan('/providers')} keys + links`,
+    `  ${chalk.cyan('/settings')} configure        ${chalk.cyan('/stats')} usage today`,
+    `  ${chalk.cyan('/files <glob>')} attach files  ${chalk.cyan('/help')} all commands`,
+    "",
+    `${chalk.gray('Config:')} ${CONFIG_FILE}`
   ].join("\n");
 
   console.log(`\n${getLogo()}\n`);
@@ -670,22 +872,46 @@ async function showHomeScreen(modelKey, config, session) {
 
 function showChatHelp() {
   console.log(boxen([
-    `${chalk.cyan("/model, /m [key]")}    выбрать модель для этой сессии`,
-    `${chalk.cyan("/settings, /config")}  открыть настройки CLI`,
-    `${chalk.cyan("/stats [key]")}        показать статистику`,
-    `${chalk.cyan("/models")}             показать локально настроенные модели`,
-    `${chalk.cyan("/sync-models")}        обновить список моделей по API ключу`,
-    `${chalk.cyan("/doctor")}             проверить окружение`,
-    `${chalk.cyan("/path")}               показать пути к конфигу и статистике`,
-    `${chalk.cyan("/reset-stats")}        сбросить локальную статистику`,
-    `${chalk.cyan("/save [on|off]")}      переключить сохранение файлов`,
-    `${chalk.cyan("/dry [on|off]")}       переключить dry-run`,
-    `${chalk.cyan("/search [on|off]")}    включить/выключить Google Search`,
-    `${chalk.cyan('/files <glob>')}        добавить файлы к следующему сообщению`,
-    `${chalk.cyan("/clear")}              начать новый чат без истории`,
-    `${chalk.cyan("/home")}               показать стартовый экран`,
-    `${chalk.cyan("/exit, /q")}           выйти`
+    `${chalk.magenta.bold('Chat')}`,
+    `  ${chalk.cyan("/model, /m [key]")}    выбрать модель для этой сессии`,
+    `  ${chalk.cyan('/files <glob>')}        добавить файлы к следующему сообщению`,
+    `  ${chalk.cyan("/clear")}              начать новый чат без истории`,
+    `  ${chalk.cyan("/home")}               показать стартовый экран`,
+    "",
+    `${chalk.magenta.bold('Settings')}`,
+    `  ${chalk.cyan("/providers")}          ключи, ссылки и подключённые провайдеры`,
+    `  ${chalk.cyan("/settings, /config")}  открыть настройки CLI`,
+    `  ${chalk.cyan("/save [on|off]")}      режим сохранения файлов`,
+    `  ${chalk.cyan("/dry [on|off]")}       dry-run без записи файлов`,
+    `  ${chalk.cyan("/search [on|off]")}    Google Search, если модель поддерживает`,
+    "",
+    `${chalk.magenta.bold('Project')}`,
+    `  ${chalk.cyan("/models")}             показать локально настроенные модели`,
+    `  ${chalk.cyan("/sync-models")}        обновить список моделей Google`,
+    `  ${chalk.cyan("/stats [key]")}        показать статистику`,
+    `  ${chalk.cyan("/doctor")}             проверить окружение`,
+    `  ${chalk.cyan("/path")}               пути к конфигу и статистике`,
+    `  ${chalk.cyan("/reset-stats")}        сбросить локальную статистику`,
+    "",
+    `  ${chalk.cyan("/exit, /q")}           выйти`
   ].join("\n"), { padding: 1, borderColor: 'cyan', borderStyle: 'round', title: 'COMMANDS' }));
+}
+
+function showProvidersGuide(config) {
+  const lines = [];
+  for (const [provider, preset] of Object.entries(PROVIDER_PRESETS)) {
+    const providerConfig = getProviderConfig(config, provider);
+    const configured = isProviderConfigured(config, provider);
+    lines.push(`${configured ? chalk.green('✓') : chalk.yellow('!')} ${chalk.bold(preset.label)} ${chalk.gray(`(${provider})`)}`);
+    lines.push(`  ${chalk.gray('Key:')} ${providerConfig.apiKey ? 'сохранен' : `не задан${preset.env ? ` · env ${preset.env}` : ''}`}`);
+    if (providerConfig.baseURL) lines.push(`  ${chalk.gray('Base URL:')} ${providerConfig.baseURL}`);
+    if (preset.keyUrl) lines.push(`  ${chalk.gray('Где взять ключ:')} ${preset.keyUrl}`);
+    if (preset.docsUrl) lines.push(`  ${chalk.gray('Docs:')} ${preset.docsUrl}`);
+    lines.push(`  ${chalk.gray(preset.note)}`);
+    lines.push('');
+  }
+  lines.push(`${chalk.cyan('/settings')} → ${chalk.gray('API ключи провайдеров')} — вставить ключ или настроить OpenAI-compatible.`);
+  console.log(boxen(lines.join('\n'), { padding: 1, borderColor: 'cyan', borderStyle: 'round', title: 'PROVIDERS' }));
 }
 
 async function promptModelChoice(currentModelKey) {
@@ -731,8 +957,97 @@ async function offerQuotaModelSwitch(currentModelKey, setModel) {
   return nextModelKey;
 }
 
+async function editProviderSettings(config) {
+  const providerChoices = Object.entries(PROVIDER_PRESETS).map(([provider, preset]) => {
+    const providerConfig = getProviderConfig(config, provider);
+    const status = providerConfig.apiKey ? 'ключ сохранен' : 'ключ не задан';
+    return {
+      name: `${preset.label.padEnd(34)} | ${status}`,
+      value: provider
+    };
+  });
+  providerChoices.push({ name: 'Назад', value: null });
+
+  const { provider } = await inquirer.prompt([{
+    type: 'list',
+    name: 'provider',
+    message: 'Провайдер',
+    choices: providerChoices
+  }]);
+  if (!provider) return config;
+
+  config.providers[provider] = config.providers[provider] || {};
+  const preset = getProviderPreset(provider);
+  const providerConfig = getProviderConfig(config, provider);
+  console.log();
+  showProvidersGuide(config);
+
+  const choices = [
+    { name: 'Сохранить/заменить API key', value: 'setKey' },
+    { name: 'Удалить API key из config.json', value: 'clearKey' }
+  ];
+  if (preset.type === 'openai-compatible') {
+    choices.push({ name: 'Изменить base URL', value: 'baseURL' });
+    if (provider === 'openaiCompatible') choices.push({ name: 'Изменить model id', value: 'model' });
+  }
+  choices.push({ name: 'Назад', value: 'back' });
+
+  const { action } = await inquirer.prompt([{
+    type: 'list',
+    name: 'action',
+    message: `${preset.label}: ${providerConfig.apiKey ? 'ключ сохранен' : 'ключ не задан'}`,
+    choices
+  }]);
+
+  if (action === 'setKey') {
+    const { apiKey } = await inquirer.prompt([{
+      type: 'password',
+      name: 'apiKey',
+      message: `Введите API key для ${preset.label}:`,
+      mask: '*',
+      validate: value => value && value.trim().length > 0 ? true : 'Ключ не может быть пустым'
+    }]);
+    config.providers[provider].apiKey = apiKey.trim();
+  }
+  if (action === 'clearKey') {
+    config.providers[provider].apiKey = null;
+  }
+  if (action === 'baseURL') {
+    const { baseURL } = await inquirer.prompt([{
+      type: 'input',
+      name: 'baseURL',
+      message: 'Base URL:',
+      default: providerConfig.baseURL || preset.baseURL,
+      validate: value => value && value.trim().length > 0 ? true : 'Base URL не может быть пустым'
+    }]);
+    config.providers[provider].baseURL = baseURL.trim().replace(/\/+$/, '');
+  }
+  if (action === 'model') {
+    const { model } = await inquirer.prompt([{
+      type: 'input',
+      name: 'model',
+      message: 'Model id:',
+      default: providerConfig.model || 'gpt-4o-mini',
+      validate: value => value && value.trim().length > 0 ? true : 'Model id не может быть пустым'
+    }]);
+    config.providers[provider].model = model.trim();
+    config.availableModels = config.availableModels || {};
+    config.availableModels.openai = {
+      provider,
+      id: model.trim(),
+      desc: 'Пользовательская OpenAI-compatible модель',
+      dailyLimit: 0,
+      supportsSearch: false,
+      supportsStructuredOutput: true,
+      autoFallback: true
+    };
+  }
+
+  return config;
+}
+
 async function openSettingsMenu(config) {
-  let nextConfig = { ...DEFAULT_SETTINGS, ...config };
+  let nextConfig = normalizeConfig(config);
 
   while (true) {
     const { action } = await inquirer.prompt([{
@@ -740,7 +1055,7 @@ async function openSettingsMenu(config) {
       name: 'action',
         message: 'Настройки Gemini CLI',
         choices: [
-        { name: `Google API ключ: ${nextConfig.providers?.google?.apiKey ? 'сохранен в конфиге' : (process.env.GEMINI_API_KEY ? 'из GEMINI_API_KEY' : 'не задан')}`, value: 'key' },
+        { name: 'API ключи провайдеров', value: 'providers' },
         { name: `Модель по умолчанию: ${nextConfig.defaultModel}`, value: 'model' },
         { name: `Автозамена модели: ${nextConfig.autoFallback ? 'включена' : 'выключена'}`, value: 'fallback' },
         { name: `Сохранять файлы по умолчанию: ${nextConfig.saveByDefault ? 'да' : 'нет'}`, value: 'save' },
@@ -760,31 +1075,8 @@ async function openSettingsMenu(config) {
       showConfigPath();
       continue;
     }
-    if (action === 'key') {
-      const { keyAction } = await inquirer.prompt([{
-        type: 'list',
-        name: 'keyAction',
-        message: 'API ключ',
-        choices: [
-          { name: 'Сохранить новый ключ', value: 'set' },
-          { name: 'Удалить ключ из config.json', value: 'clear' },
-          { name: 'Назад', value: 'back' }
-        ]
-      }]);
-      if (keyAction === 'set') {
-        const { apiKey } = await inquirer.prompt([{
-          type: 'password',
-          name: 'apiKey',
-          message: 'Введите Gemini API key:',
-          mask: '*',
-          validate: value => value && value.trim().length > 0 ? true : 'Ключ не может быть пустым'
-        }]);
-        nextConfig.providers.google.apiKey = apiKey.trim();
-      }
-      if (keyAction === 'clear') {
-        nextConfig.providers.google.apiKey = null;
-      }
-      if (keyAction === 'back') continue;
+    if (action === 'providers') {
+      nextConfig = await editProviderSettings(nextConfig);
     }
     if (action === 'model') nextConfig.defaultModel = await promptModelChoice(nextConfig.defaultModel);
     if (action === 'fallback') nextConfig.autoFallback = !nextConfig.autoFallback;
@@ -867,7 +1159,8 @@ async function getApiKey(provider = 'google') {
 async function findApiKey(provider = 'google') {
   const config = await readConfig();
   if (config.providers?.[provider]?.apiKey) return config.providers[provider].apiKey;
-  if (provider === 'google' && process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+  const preset = getProviderPreset(provider);
+  if (preset.env && process.env[preset.env]) return process.env[preset.env];
   return null;
 }
 
@@ -1030,6 +1323,28 @@ async function readFileAsPart(filePath) {
   return { inlineData: { data: data.toString("base64"), mimeType: getMimeType(filePath) }};
 }
 
+async function readFileAsOpenAIContent(filePath) {
+  const stats = await fs.stat(filePath);
+  if (stats.size > MAX_FILE_SIZE) {
+    console.warn(chalk.yellow(`⚠️  Пропущен файл больше ${Math.round(MAX_FILE_SIZE / 1024 / 1024)} МБ: ${filePath}`));
+    return [];
+  }
+
+  const mimeType = getMimeType(filePath);
+  const data = await fs.readFile(filePath);
+  if (mimeType.startsWith('image/')) {
+    return [{
+      type: "image_url",
+      image_url: { url: `data:${mimeType};base64,${data.toString("base64")}` }
+    }];
+  }
+
+  return [{
+    type: "text",
+    text: `\n\n--- FILE: ${filePath} ---\n${data.toString("utf8")}`
+  }];
+}
+
 async function buildFileParts(files) {
   const fileParts = [];
   const uniqueFiles = [...new Set(files)];
@@ -1037,6 +1352,48 @@ async function buildFileParts(files) {
     try {
       const part = await readFileAsPart(filePath);
       if (part) fileParts.push(part);
+    } catch (error) {
+      console.warn(chalk.yellow(`⚠️  Не удалось прочитать файл ${filePath}: ${error.message}`));
+    }
+  }
+  return fileParts;
+}
+
+function normalizeMessagePartsForOpenAI(messageParts) {
+  if (typeof messageParts === 'string') return [{ type: "text", text: messageParts }];
+  if (!Array.isArray(messageParts)) return [{ type: "text", text: String(messageParts || '') }];
+
+  const content = [];
+  for (const part of messageParts) {
+    if (typeof part === 'string') {
+      content.push({ type: "text", text: part });
+      continue;
+    }
+    if (part?.openaiContent) {
+      content.push(...part.openaiContent);
+      continue;
+    }
+    if (part?.inlineData) {
+      const { data, mimeType } = part.inlineData;
+      if (mimeType?.startsWith('image/')) {
+        content.push({ type: "image_url", image_url: { url: `data:${mimeType};base64,${data}` } });
+      } else {
+        content.push({ type: "text", text: `\n\n[base64 ${mimeType || 'file'} omitted for OpenAI-compatible provider]` });
+      }
+    }
+  }
+  return content.length > 0 ? content : [{ type: "text", text: "" }];
+}
+
+async function buildProviderFileParts(files, provider = 'google') {
+  if (getProviderType(provider) !== 'openai-compatible') return buildFileParts(files);
+
+  const fileParts = [];
+  const uniqueFiles = [...new Set(files)];
+  for (const filePath of uniqueFiles) {
+    try {
+      const openaiContent = await readFileAsOpenAIContent(filePath);
+      if (openaiContent.length > 0) fileParts.push({ openaiContent });
     } catch (error) {
       console.warn(chalk.yellow(`⚠️  Не удалось прочитать файл ${filePath}: ${error.message}`));
     }
@@ -1080,9 +1437,168 @@ function buildSystemInstruction(saveFiles, dryRun) {
   return `${systemInstructionBase}\nВыводи текст как обычно (Markdown). Файлы сохранять не требуется.`;
 }
 
+function getOpenAIResponseSchema() {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "gemini_cli_file_response",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          files: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                content: { type: "string" }
+              },
+              required: ["path", "content"],
+              additionalProperties: false
+            }
+          }
+        },
+        required: ["text", "files"],
+        additionalProperties: false
+      }
+    }
+  };
+}
+
+function buildOpenAICompatibleRequest(modelCfg, providerConfig, session, messageParts, stream) {
+  const messages = [
+    { role: "system", content: buildSystemInstruction(session.saveFiles, session.dryRun) },
+    { role: "user", content: normalizeMessagePartsForOpenAI(messageParts) }
+  ];
+  const body = {
+    model: providerConfig.model || modelCfg.id,
+    messages,
+    stream,
+    max_tokens: providerConfig.maxOutputTokens || session.maxOutputTokens || DEFAULT_SETTINGS.maxOutputTokens
+  };
+
+  if ((session.saveFiles || session.dryRun) && modelCfg.supportsStructuredOutput !== false) {
+    body.response_format = getOpenAIResponseSchema();
+  }
+
+  return body;
+}
+
+function createOpenAICompatibleModel(modelKey, session, config) {
+  const modelCfg = MODELS_CONFIG[modelKey];
+  const provider = modelCfg.provider || 'openaiCompatible';
+  const providerConfig = getProviderConfig(config, provider);
+  if (!providerConfig.apiKey) throw new Error(`API ключ для провайдера "${provider}" не задан. Откройте /settings → API ключи провайдеров.`);
+  if (!providerConfig.baseURL) throw new Error(`Base URL для провайдера "${provider}" не задан. Откройте /settings → API ключи провайдеров.`);
+
+  return {
+    startChat() {
+      return {
+        async sendMessage(messageParts) {
+          const data = await callOpenAICompatible(providerConfig, buildOpenAICompatibleRequest(modelCfg, providerConfig, session, messageParts, false));
+          return {
+            response: {
+              text: () => data.choices?.[0]?.message?.content || "",
+              usageMetadata: {
+                totalTokenCount: data.usage?.total_tokens || 0,
+                promptTokenCount: data.usage?.prompt_tokens || 0,
+                candidatesTokenCount: data.usage?.completion_tokens || 0
+              }
+            }
+          };
+        },
+        async sendMessageStream(messageParts) {
+          return callOpenAICompatibleStream(providerConfig, buildOpenAICompatibleRequest(modelCfg, providerConfig, session, messageParts, true));
+        }
+      };
+    }
+  };
+}
+
+function normalizeOpenAIBaseURL(baseURL) {
+  return String(baseURL || '').replace(/\/+$/, '');
+}
+
+async function callOpenAICompatible(providerConfig, body) {
+  const res = await fetch(`${normalizeOpenAIBaseURL(providerConfig.baseURL)}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${providerConfig.apiKey}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`[${res.status} ${res.statusText}] ${await res.text()}`);
+  return res.json();
+}
+
+async function callOpenAICompatibleStream(providerConfig, body) {
+  const res = await fetch(`${normalizeOpenAIBaseURL(providerConfig.baseURL)}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${providerConfig.apiKey}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`[${res.status} ${res.statusText}] ${await res.text()}`);
+
+  let responseResolver;
+  const response = new Promise(resolve => { responseResolver = resolve; });
+  async function* stream() {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let responseText = "";
+    let usageMetadata = { totalTokenCount: 0, promptTokenCount: 0, candidatesTokenCount: 0 };
+
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let data;
+        try {
+          data = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        const usage = data.usage;
+        if (usage) {
+          usageMetadata = {
+            totalTokenCount: usage.total_tokens || usageMetadata.totalTokenCount,
+            promptTokenCount: usage.prompt_tokens || usageMetadata.promptTokenCount,
+            candidatesTokenCount: usage.completion_tokens || usageMetadata.candidatesTokenCount
+          };
+        }
+        const text = data.choices?.[0]?.delta?.content || "";
+        if (text) {
+          responseText += text;
+          yield { text: () => text };
+        }
+      }
+    }
+
+    responseResolver({
+      text: () => responseText,
+      usageMetadata
+    });
+  }
+
+  return { stream: stream(), response };
+}
+
 function createModel(genAI, modelKey, session, config) {
   modelKey = resolveModelKey(modelKey);
   const modelCfg = MODELS_CONFIG[modelKey];
+  if (getProviderType(modelCfg.provider || 'google') === 'openai-compatible') {
+    return createOpenAICompatibleModel(modelKey, session, config);
+  }
+
   const modelOptions = {
     model: modelCfg.id,
     systemInstruction: buildSystemInstruction(session.saveFiles, session.dryRun),
@@ -1096,11 +1612,13 @@ function createModel(genAI, modelKey, session, config) {
   return genAI.getGenerativeModel(modelOptions);
 }
 
-async function renderResponse(resultOrStream, session) {
+async function renderResponse(resultOrStream, session, modelKey) {
   let responseText = "";
   let usageTokenCount = 0;
   let promptTokenCount = '?';
   let candidatesTokenCount = '?';
+  const provider = MODELS_CONFIG[modelKey]?.provider || 'google';
+  const label = getProviderPreset(provider).label.split(/\s+/)[0].toUpperCase();
 
   if (session.saveFiles || session.dryRun) {
     const responseTextRaw = resultOrStream.response.text();
@@ -1118,7 +1636,7 @@ async function renderResponse(resultOrStream, session) {
       console.log(marked(responseText) + "\n");
     }
   } else {
-    process.stdout.write(chalk.bgMagenta.black.bold(" GEMINI ") + " ");
+    process.stdout.write(chalk.bgMagenta.black.bold(` ${label} `) + " ");
     for await (const chunk of resultOrStream.stream) {
       const chunkText = chunk.text();
       responseText += chunkText;
@@ -1158,7 +1676,7 @@ async function sendChatMessage(chat, messageParts, session, modelKey, { suppress
         ? await chat.sendMessage(messageParts)
         : await chat.sendMessageStream(messageParts);
       spinner.stop();
-      const usage = await renderResponse(result, session);
+      const usage = await renderResponse(result, session, modelKey);
       const stats = await updateAndGetUsage(modelKey, usage.usageTokenCount);
       return { ok: true, ...usage, stats };
     } catch (error) {
@@ -1169,7 +1687,11 @@ async function sendChatMessage(chat, messageParts, session, modelKey, { suppress
         await sleep(delay);
         continue;
       }
-      spinner.fail(chalk.red('Ошибка'));
+      if (suppressError) {
+        spinner.stop();
+      } else {
+        spinner.fail(chalk.red('Ошибка'));
+      }
       if (!suppressError) console.error(chalk.red("❌:"), formatModelError(error));
       return {
         ok: false,
@@ -1181,14 +1703,15 @@ async function sendChatMessage(chat, messageParts, session, modelKey, { suppress
   }
 }
 
-async function sendWithAutoFallback({ createChatForModel, messageParts, session, modelKey, config }) {
+async function sendWithAutoFallback({ createChatForModel, messageParts, makeMessageParts, session, modelKey, config }) {
   let currentModelKey = modelKey;
   const initialModelKey = modelKey;
   const triedModels = [];
 
   while (true) {
     const chat = await createChatForModel(currentModelKey);
-    const result = await sendChatMessage(chat, messageParts, session, currentModelKey, {
+    const currentMessageParts = makeMessageParts ? await makeMessageParts(currentModelKey) : messageParts;
+    const result = await sendChatMessage(chat, currentMessageParts, session, currentModelKey, {
       suppressError: !!config.autoFallback
     });
     if (result?.ok) return { ...result, modelKey: currentModelKey };
@@ -1321,6 +1844,7 @@ async function run() {
     .option('--scan', 'Показать доступные модели')
     .option('--sync-models', 'Синхронизировать модели, доступные по API ключу')
     .option('--models', 'Показать локально настроенные модели')
+    .option('--providers', 'Показать провайдеры, ссылки на API ключи и статус подключения')
     .option('--stats [model]', 'Показать статистику использования')
     .option('--reset-stats', 'Сбросить локальную статистику')
     .option('--config-path', 'Показать пути к конфигу и статистике')
@@ -1336,15 +1860,15 @@ async function run() {
     )}\n`)
     .addHelpText('after', `
 ${chalk.cyan.bold("Доступные модели:")}
-  ${chalk.yellow('flash'.padEnd(8))} → gemini-3-flash-preview (Основная, быстрая)
-  ${chalk.yellow('lite'.padEnd(8))} → gemini-3.1-flash-lite (Лимит 500/день)
-  ${chalk.yellow('gemma'.padEnd(8))} → gemma-4-31b-it (Лимит 14400/день)
-  ${chalk.yellow('research'.padEnd(8))} → deep-research-pro (Глубокий поиск)
-  ${chalk.yellow('vision'.padEnd(8))} → gemini-3.1-flash-image (Анализ изображений)
+  ${chalk.yellow('lite'.padEnd(12))} → gemini-3.1-flash-lite (Google, лимит 500/день)
+  ${chalk.yellow('gemma'.padEnd(12))} → gemma-4-31b-it (Google, высокий лимит)
+  ${chalk.yellow('deepseek'.padEnd(12))} → deepseek-v4-flash (DeepSeek, нужен ключ)
+  ${chalk.yellow('qwen'.padEnd(12))} → qwen-plus (Qwen/DashScope, нужен ключ)
 
 ${chalk.cyan.bold("Примеры:")}
   ${chalk.green("gemini")} "Как дела?"
   ${chalk.green("gemini")} "Проверь код" index.js ${chalk.yellow("--save")}
+  ${chalk.green("gemini")} ${chalk.yellow("--providers")}
   ${chalk.green("gemini")} ${chalk.yellow("--stats")}
   ${chalk.green("gemini")} ${chalk.yellow("--models")}
   ${chalk.green("gemini")} ${chalk.yellow("-i")}
@@ -1370,6 +1894,7 @@ ${chalk.cyan.bold("Примеры:")}
   if (options.scan) { await scanModels(); return; }
   if (options.syncModels) { await syncModelsCommand(config); return; }
   if (options.models) { showConfiguredModels(); return; }
+  if (options.providers) { showProvidersGuide(config); return; }
   if (options.stats !== undefined) {
     await showStats(options.stats === true ? null : options.stats);
     return;
@@ -1427,6 +1952,7 @@ ${chalk.cyan.bold("Примеры:")}
     saveFiles,
     dryRun,
     searchEnabled: !!config.searchEnabled,
+    maxOutputTokens: config.maxOutputTokens || DEFAULT_SETTINGS.maxOutputTokens,
     pendingFiles: []
   };
 
@@ -1454,10 +1980,13 @@ ${chalk.cyan.bold("Примеры:")}
 
     if (prompt || filesToProcess.length > 0) {
       console.log(chalk.bgBlue.black.bold(" ВЫ ") + " " + (prompt || chalk.gray("(только файлы)")));
-      const fileParts = await buildFileParts(filesToProcess);
       const result = await sendWithAutoFallback({
         createChatForModel,
-        messageParts: filesToProcess.length > 0 ? [prompt, ...fileParts] : prompt,
+        makeMessageParts: async (nextModelKey) => {
+          const provider = MODELS_CONFIG[nextModelKey]?.provider || 'google';
+          const fileParts = await buildProviderFileParts(filesToProcess, provider);
+          return filesToProcess.length > 0 ? [prompt, ...fileParts] : prompt;
+        },
         session,
         modelKey: selectedModelKey,
         config
@@ -1527,6 +2056,7 @@ ${chalk.cyan.bold("Примеры:")}
           session.saveFiles = !!config.saveByDefault;
           session.dryRun = !!config.dryRunByDefault;
           session.searchEnabled = !!config.searchEnabled;
+          session.maxOutputTokens = config.maxOutputTokens || DEFAULT_SETTINGS.maxOutputTokens;
           recreateChat();
           console.log(chalk.green('✓ Настройки применены. История чата очищена.'));
           continue;
@@ -1550,6 +2080,11 @@ ${chalk.cyan.bold("Примеры:")}
           }
           showConfiguredModels();
           showDeniedModels(config);
+          continue;
+        }
+
+        if (command === '/providers') {
+          showProvidersGuide(config);
           continue;
         }
 
@@ -1637,12 +2172,15 @@ ${chalk.cyan.bold("Примеры:")}
         continue;
       }
 
-      const pendingFileParts = await buildFileParts(session.pendingFiles);
-      const messageParts = pendingFileParts.length > 0 ? [trimmedPrompt, ...pendingFileParts] : trimmedPrompt;
+      const pendingFiles = session.pendingFiles;
       session.pendingFiles = [];
       const result = await sendWithAutoFallback({
         createChatForModel,
-        messageParts,
+        makeMessageParts: async (nextModelKey) => {
+          const provider = MODELS_CONFIG[nextModelKey]?.provider || 'google';
+          const pendingFileParts = await buildProviderFileParts(pendingFiles, provider);
+          return pendingFileParts.length > 0 ? [trimmedPrompt, ...pendingFileParts] : trimmedPrompt;
+        },
         session,
         modelKey: selectedModelKey,
         config
@@ -1655,14 +2193,17 @@ ${chalk.cyan.bold("Примеры:")}
     return;
   }
 
-  const fileParts = await buildFileParts(filesToProcess);
   const result = await sendWithAutoFallback({
     createChatForModel: async (nextModelKey) => {
       selectedModelKey = nextModelKey;
       model = createModel(genAI, selectedModelKey, session, config);
       return model.startChat({ history: [] });
     },
-    messageParts: [prompt, ...fileParts],
+    makeMessageParts: async (nextModelKey) => {
+      const provider = MODELS_CONFIG[nextModelKey]?.provider || 'google';
+      const fileParts = await buildProviderFileParts(filesToProcess, provider);
+      return [prompt, ...fileParts];
+    },
     session,
     modelKey: selectedModelKey,
     config

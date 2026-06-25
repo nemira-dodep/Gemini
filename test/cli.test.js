@@ -26,7 +26,7 @@ const {
   assert.strictEqual(isQuotaError(new Error("fetch failed")), false);
   assert.strictEqual(isModelUnavailableError(new Error("[403 Forbidden] Your project has been denied access")), true);
   assert.strictEqual(pickInitialModel("flash", { fallbackModels: ["flash", "lite"] }, { requests: { flash: 20 } }), "lite");
-  assert.strictEqual(pickNextModel("flash", { fallbackModels: ["flash", "lite", "gemma"] }, { requests: { lite: 500 } }, []), "gemma");
+  assert.strictEqual(pickNextModel("flash", { fallbackModels: ["flash", "lite", "gemma", "flash-3-5"] }, { requests: { lite: 500 } }, []), "flash-3-5");
   assert.strictEqual(pickNextModel("flash", { fallbackModels: ["lite"] }, { requests: { lite: 500 } }, []), null);
   assert.strictEqual(normalizeConfig({ apiKey: "old-key" }).providers.google.apiKey, "old-key");
   assert.strictEqual(normalizeConfig({
@@ -40,6 +40,7 @@ const {
     }
   }).availableModels.lite.dailyLimit, 500);
   assert.strictEqual(normalizeChatCommand("gemini --sync-models"), "/sync-models");
+  assert.strictEqual(normalizeChatCommand("gemini --providers"), "/providers");
   assert.strictEqual(normalizeChatCommand("gemini --models --refresh"), "/models --refresh");
   assert.strictEqual(normalizeChatCommand("gemini -m lite"), "/model lite");
   assert.strictEqual(normalizeChatCommand("hello"), "hello");

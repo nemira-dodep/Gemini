@@ -32,29 +32,59 @@ const LEGACY_STATS_FILE = path.join(__dirname, 'gemini-usage.json');
 const LEGACY_CONFIG_FILE = path.join(__dirname, 'gemini-config.json');
 const STATS_FILE = path.join(APP_CONFIG_DIR, 'usage.json');
 const CONFIG_FILE = path.join(APP_CONFIG_DIR, 'config.json');
+const RETRY_CODES = [429, 500, 502, 503];
+const RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 600;
+const GOOGLE_KNOWN_MODEL_META = {
+  "gemini-3.1-flash-lite": { alias: "lite", dailyLimit: 500, autoFallback: true, supportsSearch: false },
+  "gemini-3.1-flash-lite-preview": { alias: "lite-preview", dailyLimit: 500, autoFallback: true, supportsSearch: false },
+  "gemma-4-31b-it": { alias: "gemma", dailyLimit: 1500, autoFallback: true, supportsSearch: false },
+  "gemma-4-26b-a4b-it": { alias: "gemma-26b", dailyLimit: 1500, autoFallback: true, supportsSearch: false },
+  "gemini-3.5-flash": { alias: "flash-3-5", dailyLimit: 20, autoFallback: true, supportsSearch: false },
+  "gemini-3-flash-preview": { alias: "flash", dailyLimit: 20, autoFallback: true, supportsSearch: false },
+  "gemini-2.5-flash-lite": { alias: "flash-lite-2-5", dailyLimit: 20, autoFallback: true, supportsSearch: true },
+  "gemini-2.5-flash": { alias: "flash-2-5", dailyLimit: 20, autoFallback: true, supportsSearch: true },
+  "gemini-2.5-flash-preview-tts": { dailyLimit: 10, autoFallback: false, supportsSearch: false, chat: false },
+  "gemini-3.1-flash-tts-preview": { dailyLimit: 10, autoFallback: false, supportsSearch: false, chat: false },
+  "gemini-2.0-flash": { dailyLimit: 0, autoFallback: false, chat: false },
+  "gemini-2.0-flash-001": { dailyLimit: 0, autoFallback: false, chat: false },
+  "gemini-2.0-flash-lite": { dailyLimit: 0, autoFallback: false, chat: false },
+  "gemini-2.0-flash-lite-001": { dailyLimit: 0, autoFallback: false, chat: false },
+  "gemini-2.5-pro": { dailyLimit: 0, autoFallback: false, chat: false },
+  "gemini-3.1-pro-preview": { dailyLimit: 0, autoFallback: false, chat: false },
+  "gemini-3.1-pro-preview-customtools": { dailyLimit: 0, autoFallback: false, chat: false },
+  "deep-research-pro-preview-12-2025": { dailyLimit: 0, autoFallback: false, chat: false },
+  "deep-research-preview-04-2026": { dailyLimit: 0, autoFallback: false, chat: false },
+  "deep-research-max-preview-04-2026": { dailyLimit: 0, autoFallback: false, chat: false }
+};
 
 let MODELS_CONFIG = {
   "flash": {
+    provider: "google",
     id: "gemini-3-flash-preview",
     desc: "🚀 Основная модель. Скорость и новейшие знания 2026.",
     dailyLimit: 20
   },
   "lite": {
+    provider: "google",
     id: "gemini-3.1-flash-lite",
     desc: "☁️ Высокие лимиты (500/день). Для рутины и тестов.",
     dailyLimit: 500
   },
   "gemma": {
+    provider: "google",
     id: "gemma-4-31b-it",
     desc: "📟 Огромные лимиты. Для массовой обработки текста.",
     dailyLimit: 14400
   },
   "research": {
+    provider: "google",
     id: "deep-research-pro-preview-12-2025",
     desc: "🔍 Глубокий поиск и создание документации.",
     dailyLimit: 500
   },
   "vision": {
+    provider: "google",
     id: "gemini-3.1-flash-image-preview",
     desc: "👁️ Анализ скриншотов, макетов и графиков.",
     dailyLimit: 20
@@ -63,7 +93,7 @@ let MODELS_CONFIG = {
 
 const systemInstructionBase = `Ты — экспертный CLI-помощник.`;
 const DEFAULT_SETTINGS = {
-  defaultModel: "flash",
+  defaultModel: "lite",
   saveByDefault: false,
   dryRunByDefault: false,
   searchEnabled: true,
@@ -72,7 +102,15 @@ const DEFAULT_SETTINGS = {
   autoSyncModels: true,
   validateModelsOnSync: true,
   modelsSyncedAt: null,
-  availableModels: null
+  availableModels: null,
+  providers: {
+    google: {
+      apiKey: null,
+      baseURL: "https://generativelanguage.googleapis.com"
+    }
+  },
+  autoFallback: true,
+  fallbackModels: ["lite", "gemma", "gemma-26b", "flash-3-5", "flash", "flash-lite-2-5", "flash-2-5"]
 };
 const MODEL_SYNC_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -110,25 +148,103 @@ async function writeAppJson(filePath, data) {
   await fs.writeFile(filePath, JSON.stringify(data, null, 2));
 }
 
+function normalizeModelCatalog(catalog = {}) {
+  const normalized = {};
+  for (const [alias, cfg] of Object.entries(catalog || {})) {
+    const id = String(cfg.id || '').toLowerCase();
+    const known = GOOGLE_KNOWN_MODEL_META[id];
+    normalized[alias] = {
+      ...cfg,
+      provider: cfg.provider || "google",
+      dailyLimit: known?.dailyLimit ?? cfg.dailyLimit ?? 0,
+      supportsSearch: known?.supportsSearch ?? cfg.supportsSearch ?? inferGoogleSearchSupport(cfg.id),
+      supportsStructuredOutput: cfg.supportsStructuredOutput ?? true,
+      autoFallback: known?.autoFallback ?? cfg.autoFallback
+    };
+  }
+  return normalized;
+}
+
+function inferGoogleSearchSupport(modelId = '') {
+  const id = String(modelId).toLowerCase();
+  const known = GOOGLE_KNOWN_MODEL_META[id];
+  if (known?.supportsSearch !== undefined) return known.supportsSearch;
+  if (id.includes('image') || id.includes('tts') || id.includes('lyria') || id.includes('robotics')) return false;
+  if (id.startsWith('gemini-3')) return false;
+  return id.includes('gemini');
+}
+
+function isAutoFallbackCandidate(modelKey) {
+  const cfg = MODELS_CONFIG[modelKey];
+  const id = String(cfg?.id || '').toLowerCase();
+  if (!cfg) return false;
+  const known = GOOGLE_KNOWN_MODEL_META[id];
+  if (known?.autoFallback !== undefined) return known.autoFallback && (cfg.dailyLimit || 0) > 0;
+  if (id.includes('image') || id.includes('tts') || id.includes('lyria')) return false;
+  if (id.includes('robotics') || id.includes('computer-use') || id.includes('research')) return false;
+  return cfg.provider === 'google' && (id.includes('gemini') || id.includes('gemma'));
+}
+
+function shouldIncludeDiscoveredModel(modelId = '') {
+  const id = String(modelId).toLowerCase();
+  const known = GOOGLE_KNOWN_MODEL_META[id];
+  if (known) return known.chat !== false && (known.dailyLimit || 0) > 0;
+  if (id.includes('embedding') || id.includes('image') || id.includes('tts')) return false;
+  if (id.includes('lyria') || id.includes('veo') || id.includes('imagen')) return false;
+  if (id.includes('audio') || id.includes('live')) return false;
+  if (id.includes('robotics') || id.includes('computer-use')) return false;
+  if (id.includes('research') || id.includes('antigravity')) return false;
+  return id.includes('gemini') || id.includes('gemma');
+}
+
+function normalizeConfig(rawConfig = {}) {
+  const config = { ...DEFAULT_SETTINGS, ...rawConfig };
+  config.providers = {
+    ...DEFAULT_SETTINGS.providers,
+    ...(rawConfig.providers || {})
+  };
+  config.providers.google = {
+    ...DEFAULT_SETTINGS.providers.google,
+    ...(rawConfig.providers?.google || {})
+  };
+
+  if (rawConfig.apiKey && !config.providers.google.apiKey) {
+    config.providers.google.apiKey = rawConfig.apiKey;
+  }
+  delete config.apiKey;
+
+  config.availableModels = config.availableModels ? normalizeModelCatalog(config.availableModels) : null;
+  config.fallbackModels = Array.isArray(config.fallbackModels) && config.fallbackModels.length > 0
+    ? config.fallbackModels
+    : DEFAULT_SETTINGS.fallbackModels;
+  return config;
+}
+
 async function readConfig() {
-  const config = { ...DEFAULT_SETTINGS, ...(await readAppJson(CONFIG_FILE, LEGACY_CONFIG_FILE, {})) };
+  const rawConfig = await readAppJson(CONFIG_FILE, LEGACY_CONFIG_FILE, {});
+  const config = normalizeConfig(rawConfig);
   applyAvailableModels(config);
   return config;
 }
 
 async function writeConfig(config) {
-  await writeAppJson(CONFIG_FILE, { ...DEFAULT_SETTINGS, ...config });
+  await writeAppJson(CONFIG_FILE, normalizeConfig(config));
 }
 
 function applyAvailableModels(config) {
   if (config?.availableModels && Object.keys(config.availableModels).length > 0) {
-    MODELS_CONFIG = config.availableModels;
+    MODELS_CONFIG = normalizeModelCatalog(config.availableModels);
+  } else {
+    MODELS_CONFIG = normalizeModelCatalog(MODELS_CONFIG);
   }
 }
 
 function getPreferredAlias(modelId, usedAliases) {
   const id = modelId.toLowerCase();
   const candidates = [];
+  const knownAlias = GOOGLE_KNOWN_MODEL_META[id]?.alias;
+
+  if (knownAlias) candidates.push(knownAlias);
 
   if (id.includes('flash-lite') || id.includes('lite')) candidates.push('lite');
   if (id.includes('flash') && !id.includes('image')) candidates.push('flash');
@@ -163,13 +279,19 @@ function buildModelCatalog(apiModels) {
     if (!model.supportedGenerationMethods?.includes('generateContent')) continue;
     const id = model.name?.replace(/^models\//, '');
     if (!id) continue;
+    if (!shouldIncludeDiscoveredModel(id)) continue;
 
     const alias = getPreferredAlias(id, usedAliases);
+    const known = GOOGLE_KNOWN_MODEL_META[id.toLowerCase()];
     usedAliases.add(alias);
     catalog[alias] = {
+      provider: 'google',
       id,
       desc: model.displayName || model.description || 'Доступна для generateContent по вашему API ключу',
-      dailyLimit: MODELS_CONFIG[alias]?.dailyLimit || 0,
+      dailyLimit: known?.dailyLimit ?? MODELS_CONFIG[alias]?.dailyLimit ?? 0,
+      supportsSearch: known?.supportsSearch ?? inferGoogleSearchSupport(id),
+      supportsStructuredOutput: true,
+      autoFallback: known?.autoFallback ?? isAutoFallbackCandidate(alias),
       source: 'api'
     };
   }
@@ -185,12 +307,13 @@ async function fetchAvailableModels(apiKey) {
 }
 
 async function canUseModel(apiKey, modelId) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:countTokens?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: 'ping' }] }]
+      contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+      generationConfig: { maxOutputTokens: 1 }
     })
   });
 
@@ -244,7 +367,7 @@ async function syncModels(apiKey, config, { force = false, silent = false } = {}
       catalog = validation.validated;
       deniedModels = validation.denied;
       if (Object.keys(catalog).length === 0) {
-        throw new Error('Ни одна модель не прошла проверку доступа countTokens');
+        throw new Error('Ни одна модель не прошла проверку доступа generateContent');
       }
     }
 
@@ -252,7 +375,7 @@ async function syncModels(apiKey, config, { force = false, silent = false } = {}
     config.deniedModels = deniedModels;
     config.modelsSyncedAt = new Date().toISOString();
     if (!catalog[config.defaultModel]) {
-      const preferred = catalog.flash ? 'flash' : Object.keys(catalog)[0];
+      const preferred = catalog.lite ? 'lite' : (catalog.gemma ? 'gemma' : (catalog.flash ? 'flash' : Object.keys(catalog)[0]));
       config.defaultModel = preferred;
     }
     await writeConfig(config);
@@ -281,7 +404,7 @@ function getTokenPrice(modelKey) {
 
 function resolveModelKey(modelKey) {
   if (MODELS_CONFIG[modelKey]) return modelKey;
-  const fallback = MODELS_CONFIG.flash ? "flash" : Object.keys(MODELS_CONFIG)[0];
+  const fallback = MODELS_CONFIG.lite ? "lite" : (MODELS_CONFIG.gemma ? "gemma" : (MODELS_CONFIG.flash ? "flash" : Object.keys(MODELS_CONFIG)[0]));
   console.warn(chalk.yellow(`⚠️  Модель "${modelKey}" не найдена, использую ${fallback}.`));
   return fallback;
 }
@@ -386,12 +509,34 @@ function formatRemainingLimit(modelKey, requests) {
   return `${Math.max(0, limit - requests)}/${limit}`;
 }
 
+function hasLocalLimitRemaining(modelKey, stats) {
+  const limit = MODELS_CONFIG[modelKey]?.dailyLimit;
+  if (!limit) return true;
+  return (stats.requests?.[modelKey] || 0) < limit;
+}
+
+function getFallbackChain(config = {}) {
+  const configured = Array.isArray(config.fallbackModels) ? config.fallbackModels : [];
+  return [...new Set(configured)].filter(modelKey => MODELS_CONFIG[modelKey] && isAutoFallbackCandidate(modelKey));
+}
+
+function pickNextModel(currentModelKey, config = {}, stats = { requests: {} }, triedModels = []) {
+  const tried = new Set([currentModelKey, ...triedModels]);
+  const chain = getFallbackChain(config);
+  return chain.find(modelKey => !tried.has(modelKey) && hasLocalLimitRemaining(modelKey, stats)) || null;
+}
+
+function pickInitialModel(modelKey, config = {}, stats = { requests: {} }) {
+  if (hasLocalLimitRemaining(modelKey, stats)) return modelKey;
+  return pickNextModel(modelKey, config, stats, []) || modelKey;
+}
+
 function showConfiguredModels() {
   console.log(chalk.magenta.bold('\n🤖 НАСТРОЕННЫЕ МОДЕЛИ\n'));
   for (const [key, cfg] of Object.entries(MODELS_CONFIG)) {
     console.log(`${chalk.yellow(key.padEnd(10))} ${chalk.cyan(cfg.id)}`);
     console.log(chalk.gray(`           ${cfg.desc}`));
-    console.log(chalk.gray(`           Локальный лимит: ${cfg.dailyLimit ? `${cfg.dailyLimit}/день` : 'не задан'}${cfg.source === 'api' ? ' · synced' : ''}\n`));
+    console.log(chalk.gray(`           Провайдер: ${cfg.provider || 'google'} · Локальный лимит: ${cfg.dailyLimit ? `${cfg.dailyLimit}/день` : 'не задан'}${cfg.source === 'api' ? ' · synced' : ''}\n`));
   }
 }
 
@@ -593,10 +738,11 @@ async function openSettingsMenu(config) {
     const { action } = await inquirer.prompt([{
       type: 'list',
       name: 'action',
-      message: 'Настройки Gemini CLI',
-      choices: [
-        { name: `API ключ: ${process.env.GEMINI_API_KEY ? 'из GEMINI_API_KEY' : (nextConfig.apiKey ? 'сохранен в конфиге' : 'не задан')}`, value: 'key' },
+        message: 'Настройки Gemini CLI',
+        choices: [
+        { name: `Google API ключ: ${nextConfig.providers?.google?.apiKey ? 'сохранен в конфиге' : (process.env.GEMINI_API_KEY ? 'из GEMINI_API_KEY' : 'не задан')}`, value: 'key' },
         { name: `Модель по умолчанию: ${nextConfig.defaultModel}`, value: 'model' },
+        { name: `Автозамена модели: ${nextConfig.autoFallback ? 'включена' : 'выключена'}`, value: 'fallback' },
         { name: `Сохранять файлы по умолчанию: ${nextConfig.saveByDefault ? 'да' : 'нет'}`, value: 'save' },
         { name: `Dry-run по умолчанию: ${nextConfig.dryRunByDefault ? 'да' : 'нет'}`, value: 'dry' },
         { name: `Google Search: ${nextConfig.searchEnabled ? 'включен' : 'выключен'}`, value: 'search' },
@@ -633,14 +779,15 @@ async function openSettingsMenu(config) {
           mask: '*',
           validate: value => value && value.trim().length > 0 ? true : 'Ключ не может быть пустым'
         }]);
-        nextConfig.apiKey = apiKey.trim();
+        nextConfig.providers.google.apiKey = apiKey.trim();
       }
       if (keyAction === 'clear') {
-        delete nextConfig.apiKey;
+        nextConfig.providers.google.apiKey = null;
       }
       if (keyAction === 'back') continue;
     }
     if (action === 'model') nextConfig.defaultModel = await promptModelChoice(nextConfig.defaultModel);
+    if (action === 'fallback') nextConfig.autoFallback = !nextConfig.autoFallback;
     if (action === 'save') nextConfig.saveByDefault = !nextConfig.saveByDefault;
     if (action === 'dry') nextConfig.dryRunByDefault = !nextConfig.dryRunByDefault;
     if (action === 'search') nextConfig.searchEnabled = !nextConfig.searchEnabled;
@@ -708,8 +855,8 @@ async function syncModelsCommand(config) {
   }
 }
 
-async function getApiKey() {
-  const key = await findApiKey();
+async function getApiKey(provider = 'google') {
+  const key = await findApiKey(provider);
   if (key) return key;
 
   console.error(chalk.red("\n❌ Ошибка: API ключ не найден."));
@@ -717,15 +864,15 @@ async function getApiKey() {
   process.exit(1);
 }
 
-async function findApiKey() {
-  if (process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+async function findApiKey(provider = 'google') {
   const config = await readConfig();
-  if (config.apiKey) return config.apiKey;
+  if (config.providers?.[provider]?.apiKey) return config.providers[provider].apiKey;
+  if (provider === 'google' && process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
   return null;
 }
 
 async function ensureApiKeyForInteractive(config) {
-  const existingKey = await findApiKey();
+  const existingKey = await findApiKey('google');
   if (existingKey) return existingKey;
 
   console.log(`\n${getLogo()}\n`);
@@ -744,10 +891,10 @@ async function ensureApiKeyForInteractive(config) {
     validate: value => value && value.trim().length > 0 ? true : 'Ключ не может быть пустым'
   }]);
 
-  config.apiKey = apiKey.trim();
+  config.providers.google.apiKey = apiKey.trim();
   await writeConfig(config);
   console.log(chalk.green('✓ API ключ сохранён'));
-  return config.apiKey;
+  return config.providers.google.apiKey;
 }
 
 async function parseInputArgs(args) {
@@ -942,7 +1089,7 @@ function createModel(genAI, modelKey, session, config) {
     generationConfig: buildGenerationConfig(session.saveFiles, session.dryRun, config)
   };
 
-  if (session.searchEnabled) {
+  if (session.searchEnabled && modelCfg.supportsSearch !== false) {
     modelOptions.tools = [{ google_search: {} }];
   }
 
@@ -952,10 +1099,15 @@ function createModel(genAI, modelKey, session, config) {
 async function renderResponse(resultOrStream, session) {
   let responseText = "";
   let usageTokenCount = 0;
+  let promptTokenCount = '?';
+  let candidatesTokenCount = '?';
 
   if (session.saveFiles || session.dryRun) {
     const responseTextRaw = resultOrStream.response.text();
-    usageTokenCount = resultOrStream.response.usageMetadata?.totalTokenCount || 0;
+    const usage = resultOrStream.response.usageMetadata;
+    usageTokenCount = usage?.totalTokenCount || 0;
+    promptTokenCount = usage?.promptTokenCount || '?';
+    candidatesTokenCount = usage?.candidatesTokenCount || '?';
     try {
       const parsed = JSON.parse(responseTextRaw);
       responseText = parsed.text || "";
@@ -974,32 +1126,112 @@ async function renderResponse(resultOrStream, session) {
     }
     console.log("\n");
     const response = await resultOrStream.response;
-    usageTokenCount = response.usageMetadata?.totalTokenCount || 0;
+    const usage = response.usageMetadata;
+    usageTokenCount = usage?.totalTokenCount || 0;
+    promptTokenCount = usage?.promptTokenCount || '?';
+    candidatesTokenCount = usage?.candidatesTokenCount || '?';
   }
 
-  return { responseText, usageTokenCount };
+  return { responseText, usageTokenCount, promptTokenCount, candidatesTokenCount };
 }
 
-async function sendChatMessage(chat, messageParts, session, modelKey) {
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getErrorStatus(error) {
+  const message = error?.message || String(error);
+  const match = message.match(/\b(429|500|502|503)\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function isRetryableError(error) {
+  const status = getErrorStatus(error);
+  return status ? RETRY_CODES.includes(status) : false;
+}
+
+async function sendChatMessage(chat, messageParts, session, modelKey, { suppressError = false } = {}) {
   const spinner = ora({ text: chalk.magenta('Думаю...'), color: 'magenta' }).start();
-  try {
-    const result = session.saveFiles || session.dryRun
-      ? await chat.sendMessage(messageParts)
-      : await chat.sendMessageStream(messageParts);
-    spinner.stop();
-    const { usageTokenCount } = await renderResponse(result, session);
-    await updateAndGetUsage(modelKey, usageTokenCount);
-    return { ok: true };
-  } catch (error) {
-    spinner.fail(chalk.red('Ошибка'));
-    console.error(chalk.red("❌:"), formatModelError(error));
-    return { ok: false, quotaExceeded: isQuotaError(error), error };
+  for (let attempt = 0; attempt <= RETRIES; attempt += 1) {
+    try {
+      const result = session.saveFiles || session.dryRun
+        ? await chat.sendMessage(messageParts)
+        : await chat.sendMessageStream(messageParts);
+      spinner.stop();
+      const usage = await renderResponse(result, session);
+      const stats = await updateAndGetUsage(modelKey, usage.usageTokenCount);
+      return { ok: true, ...usage, stats };
+    } catch (error) {
+      const canRetry = isRetryableError(error) && attempt < RETRIES;
+      if (canRetry) {
+        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+        spinner.text = chalk.yellow(`Временный сбой ${getErrorStatus(error) || ''}, повтор ${attempt + 1}/${RETRIES}...`);
+        await sleep(delay);
+        continue;
+      }
+      spinner.fail(chalk.red('Ошибка'));
+      if (!suppressError) console.error(chalk.red("❌:"), formatModelError(error));
+      return {
+        ok: false,
+        quotaExceeded: isQuotaError(error),
+        modelUnavailable: isModelUnavailableError(error),
+        error
+      };
+    }
+  }
+}
+
+async function sendWithAutoFallback({ createChatForModel, messageParts, session, modelKey, config }) {
+  let currentModelKey = modelKey;
+  const initialModelKey = modelKey;
+  const triedModels = [];
+
+  while (true) {
+    const chat = await createChatForModel(currentModelKey);
+    const result = await sendChatMessage(chat, messageParts, session, currentModelKey, {
+      suppressError: !!config.autoFallback
+    });
+    if (result?.ok) return { ...result, modelKey: currentModelKey };
+
+    const shouldFallback = !!config.autoFallback && (result?.quotaExceeded || result?.modelUnavailable);
+    if (!shouldFallback) {
+      if (config.autoFallback && result?.error) {
+        console.error(chalk.red("❌:"), formatModelError(result.error));
+      }
+      return { ...result, modelKey: initialModelKey };
+    }
+
+    const stats = await getUsageSnapshot();
+    const nextModelKey = pickNextModel(currentModelKey, config, stats, triedModels);
+    if (!nextModelKey) {
+      console.error(chalk.red("❌:"), formatModelError(result.error));
+      const chainText = getFallbackChain(config).join(' → ') || 'пусто';
+      console.log(chalk.yellow(`Автозамена проверила цепочку (${chainText}) и не нашла доступную модель.`));
+      return { ...result, modelKey: initialModelKey };
+    }
+
+    const reason = result?.quotaExceeded ? 'исчерпан' : 'недоступен';
+    console.log(chalk.yellow(`↪ ${currentModelKey} ${reason} → перешёл на ${nextModelKey}`));
+    triedModels.push(currentModelKey);
+    currentModelKey = nextModelKey;
   }
 }
 
 function isQuotaError(error) {
   const message = (error?.message || String(error)).toLowerCase();
   return message.includes('429') || message.includes('too many requests') || message.includes('quota') || message.includes('rate-limit') || message.includes('rate limit');
+}
+
+function isModelUnavailableError(error) {
+  const message = (error?.message || String(error)).toLowerCase();
+  return message.includes('403') ||
+    message.includes('404') ||
+    message.includes('permission') ||
+    message.includes('forbidden') ||
+    message.includes('denied access') ||
+    message.includes('not supported') ||
+    message.includes('unsupported') ||
+    message.includes('not found');
 }
 
 function formatModelError(error) {
@@ -1033,7 +1265,7 @@ async function runDoctor() {
   const checks = [
     ['Node.js', process.version],
     ['Папка конфигурации', APP_CONFIG_DIR],
-    ['API ключ', process.env.GEMINI_API_KEY ? 'найден в GEMINI_API_KEY' : (config.apiKey ? 'найден в конфиге' : 'не найден')],
+    ['Google API ключ', config.providers?.google?.apiKey ? 'найден в конфиге' : (process.env.GEMINI_API_KEY ? 'найден в GEMINI_API_KEY' : 'не найден')],
     ['HTTPS_PROXY/HTTP_PROXY', process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || 'не задан'],
     ['Модель по умолчанию', resolveModelKey(config.defaultModel || 'flash')],
     ['Статистика', statsExists ? 'найдена' : 'пока нет данных']
@@ -1129,9 +1361,9 @@ ${chalk.cyan.bold("Примеры:")}
   let selectedModelKey = await getDefaultModel();
 
   if (options.setKey) {
-    config.apiKey = options.setKey;
+    config.providers.google.apiKey = options.setKey;
     await writeConfig(config);
-    console.log(chalk.green(`✅ API ключ успешно сохранён!`));
+    console.log(chalk.green(`✅ Google API ключ успешно сохранён!`));
     if (positional.length === 0 && !interactiveMode) return;
   }
 
@@ -1171,7 +1403,7 @@ ${chalk.cyan.bold("Примеры:")}
   const prompt = [parsedInput.prompt, stdinContent].filter(Boolean).join("\n\n").trim();
   const filesToProcess = parsedInput.filesToProcess;
 
-  const apiKey = interactiveMode ? await ensureApiKeyForInteractive(config) : await getApiKey();
+  let apiKey = interactiveMode ? await ensureApiKeyForInteractive(config) : await getApiKey();
   if (config.autoSyncModels) {
     try {
       await syncModels(apiKey, config, { force: false, silent: false });
@@ -1181,10 +1413,16 @@ ${chalk.cyan.bold("Примеры:")}
       console.warn(chalk.gray('Продолжаю с локальным списком. Для ручной проверки используйте gemini --sync-models.'));
     }
   }
-  const genAI = new GoogleGenerativeAI(apiKey);
+  let genAI = new GoogleGenerativeAI(apiKey);
 
   selectedModelKey = resolveModelKey(selectedModelKey);
-  showLimitWarning(selectedModelKey, await getUsageSnapshot());
+  const usageSnapshot = await getUsageSnapshot();
+  const requestedModelKey = selectedModelKey;
+  selectedModelKey = pickInitialModel(selectedModelKey, config, usageSnapshot);
+  if (requestedModelKey !== selectedModelKey) {
+    console.log(chalk.yellow(`↪ ${requestedModelKey} уже у локального дневного лимита → стартую с ${selectedModelKey}`));
+  }
+  showLimitWarning(selectedModelKey, usageSnapshot);
   const session = {
     saveFiles,
     dryRun,
@@ -1207,13 +1445,25 @@ ${chalk.cyan.bold("Примеры:")}
       recreateChat();
     };
 
+    const createChatForModel = async (nextModelKey) => {
+      if (nextModelKey !== selectedModelKey) await switchSessionModel(nextModelKey);
+      return chat;
+    };
+
     await showHomeScreen(selectedModelKey, config, session);
 
     if (prompt || filesToProcess.length > 0) {
       console.log(chalk.bgBlue.black.bold(" ВЫ ") + " " + (prompt || chalk.gray("(только файлы)")));
       const fileParts = await buildFileParts(filesToProcess);
-      const result = await sendChatMessage(chat, filesToProcess.length > 0 ? [prompt, ...fileParts] : prompt, session, selectedModelKey);
-      if (result?.quotaExceeded) {
+      const result = await sendWithAutoFallback({
+        createChatForModel,
+        messageParts: filesToProcess.length > 0 ? [prompt, ...fileParts] : prompt,
+        session,
+        modelKey: selectedModelKey,
+        config
+      });
+      selectedModelKey = result.modelKey || selectedModelKey;
+      if (result?.quotaExceeded && !config.autoFallback) {
         selectedModelKey = await offerQuotaModelSwitch(selectedModelKey, switchSessionModel);
       }
     }
@@ -1268,6 +1518,11 @@ ${chalk.cyan.bold("Примеры:")}
 
         if (command === '/settings' || command === '/config') {
           config = await openSettingsMenu(config);
+          const nextApiKey = await findApiKey('google');
+          if (nextApiKey && nextApiKey !== apiKey) {
+            apiKey = nextApiKey;
+            genAI = new GoogleGenerativeAI(apiKey);
+          }
           selectedModelKey = resolveModelKey(config.defaultModel || selectedModelKey);
           session.saveFiles = !!config.saveByDefault;
           session.dryRun = !!config.dryRunByDefault;
@@ -1385,73 +1640,50 @@ ${chalk.cyan.bold("Примеры:")}
       const pendingFileParts = await buildFileParts(session.pendingFiles);
       const messageParts = pendingFileParts.length > 0 ? [trimmedPrompt, ...pendingFileParts] : trimmedPrompt;
       session.pendingFiles = [];
-      const result = await sendChatMessage(chat, messageParts, session, selectedModelKey);
-      if (result?.quotaExceeded) {
+      const result = await sendWithAutoFallback({
+        createChatForModel,
+        messageParts,
+        session,
+        modelKey: selectedModelKey,
+        config
+      });
+      selectedModelKey = result.modelKey || selectedModelKey;
+      if (result?.quotaExceeded && !config.autoFallback) {
         selectedModelKey = await offerQuotaModelSwitch(selectedModelKey, switchSessionModel);
       }
     }
     return;
   }
 
-  const spinner = ora({ text: chalk.magenta(`Gemini [${selectedModelKey}] на связи...`), color: 'magenta' }).start();
+  const fileParts = await buildFileParts(filesToProcess);
+  const result = await sendWithAutoFallback({
+    createChatForModel: async (nextModelKey) => {
+      selectedModelKey = nextModelKey;
+      model = createModel(genAI, selectedModelKey, session, config);
+      return model.startChat({ history: [] });
+    },
+    messageParts: [prompt, ...fileParts],
+    session,
+    modelKey: selectedModelKey,
+    config
+  });
 
-  try {
-    const fileParts = await buildFileParts(filesToProcess);
+  selectedModelKey = result.modelKey || selectedModelKey;
+  if (!result.ok) return;
 
-    let responseText = "";
-    let usageTokenCount = 0;
-    let promptTokenCount = '?';
-    let candidatesTokenCount = '?';
+  const totalTokens = result.stats.tokens[selectedModelKey] || 0;
+  const totalRequests = result.stats.requests[selectedModelKey] || 0;
+  const tokenPricePer1k = getTokenPrice(selectedModelKey);
+  const estimatedCost = (totalTokens / 1000) * tokenPricePer1k;
 
-    if (saveFiles || dryRun) {
-      const result = await model.generateContent([prompt, ...fileParts]);
-      spinner.succeed(chalk.green('Готово!\n'));
-      responseText = result.response.text();
-      const usage = result.response.usageMetadata;
-      usageTokenCount = usage?.totalTokenCount || 0;
-      promptTokenCount = usage?.promptTokenCount || '?';
-      candidatesTokenCount = usage?.candidatesTokenCount || '?';
-      try {
-        const parsed = JSON.parse(responseText);
-        console.log(boxen(marked(parsed.text), { padding: 1, borderColor: 'magenta', borderStyle: 'round', title: 'GEMINI RESPONSE', titleAlignment: 'center' }));
-        await processSavedFiles(parsed.files, dryRun);
-      } catch(e) { console.log(marked(responseText) + "\n"); }
-    } else {
-      const result = await model.generateContentStream([prompt, ...fileParts]);
-      spinner.succeed(chalk.green('Готово!\n'));
-      process.stdout.write(chalk.bgMagenta.black.bold(" GEMINI ") + " ");
-      for await (const chunk of result.stream) {
-        const chunkText = chunk.text();
-        responseText += chunkText;
-        process.stdout.write(chunkText);
-      }
-      console.log("\n");
-      const response = await result.response;
-      const usage = response.usageMetadata;
-      usageTokenCount = usage?.totalTokenCount || 0;
-      promptTokenCount = usage?.promptTokenCount || '?';
-      candidatesTokenCount = usage?.candidatesTokenCount || '?';
-    }
-
-    const stats = await updateAndGetUsage(selectedModelKey, usageTokenCount);
-    const totalTokens = stats.tokens[selectedModelKey] || 0;
-    const totalRequests = stats.requests[selectedModelKey] || 0;
-    
-    const tokenPricePer1k = getTokenPrice(selectedModelKey);
-    const estimatedCost = (totalTokens / 1000) * tokenPricePer1k;
-
-    const statsBox = boxen(
-      `${chalk.cyan.bold(`📊 СТАТИСТИКА [${selectedModelKey}]`)}\n\n` +
-      `${chalk.gray(`Запрос:       `)}${chalk.white(`${promptTokenCount} + ${candidatesTokenCount} = ${usageTokenCount} токенов`)}\n` +
-      `${chalk.gray(`За день:      `)}${chalk.white(`${totalTokens} токенов (${totalRequests} запросов)`)}\n` +
-      `${chalk.yellow.bold(`Стоимость:    ~$${estimatedCost.toFixed(4)}`)}`,
-      { padding: 1, margin: { top: 1 }, borderStyle: 'round', borderColor: 'cyan' }
-    );
-    console.log(statsBox);
-  } catch (error) {
-    spinner.fail(chalk.red('Ошибка'));
-    console.error(chalk.red("❌:"), formatModelError(error));
-  }
+  const statsBox = boxen(
+    `${chalk.cyan.bold(`📊 СТАТИСТИКА [${selectedModelKey}]`)}\n\n` +
+    `${chalk.gray(`Запрос:       `)}${chalk.white(`${result.promptTokenCount} + ${result.candidatesTokenCount} = ${result.usageTokenCount} токенов`)}\n` +
+    `${chalk.gray(`За день:      `)}${chalk.white(`${totalTokens} токенов (${totalRequests} запросов)`)}\n` +
+    `${chalk.yellow.bold(`Стоимость:    ~$${estimatedCost.toFixed(4)}`)}`,
+    { padding: 1, margin: { top: 1 }, borderStyle: 'round', borderColor: 'cyan' }
+  );
+  console.log(statsBox);
 }
 
 if (require.main === module) {
@@ -1464,6 +1696,10 @@ module.exports = {
   normalizeChatCommand,
   parseInputArgs,
   parseToggleArg,
+  pickInitialModel,
+  pickNextModel,
+  normalizeConfig,
   isQuotaError,
+  isModelUnavailableError,
   sanitizeFilePath
 };

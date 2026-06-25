@@ -4,10 +4,14 @@ const path = require("path");
 const {
   getMimeType,
   isQuotaError,
+  isModelUnavailableError,
   normalizeStats,
   normalizeChatCommand,
+  normalizeConfig,
   parseInputArgs,
   parseToggleArg,
+  pickInitialModel,
+  pickNextModel,
   sanitizeFilePath
 } = require("../cli");
 
@@ -20,6 +24,21 @@ const {
   assert.strictEqual(parseToggleArg(undefined, true), false);
   assert.strictEqual(isQuotaError(new Error("[429 Too Many Requests] quota exceeded")), true);
   assert.strictEqual(isQuotaError(new Error("fetch failed")), false);
+  assert.strictEqual(isModelUnavailableError(new Error("[403 Forbidden] Your project has been denied access")), true);
+  assert.strictEqual(pickInitialModel("flash", { fallbackModels: ["flash", "lite"] }, { requests: { flash: 20 } }), "lite");
+  assert.strictEqual(pickNextModel("flash", { fallbackModels: ["flash", "lite", "gemma"] }, { requests: { lite: 500 } }, []), "gemma");
+  assert.strictEqual(pickNextModel("flash", { fallbackModels: ["lite"] }, { requests: { lite: 500 } }, []), null);
+  assert.strictEqual(normalizeConfig({ apiKey: "old-key" }).providers.google.apiKey, "old-key");
+  assert.strictEqual(normalizeConfig({
+    availableModels: {
+      lite: { id: "gemini-3.1-flash-lite", supportsSearch: true, dailyLimit: 0 }
+    }
+  }).availableModels.lite.supportsSearch, false);
+  assert.strictEqual(normalizeConfig({
+    availableModels: {
+      lite: { id: "gemini-3.1-flash-lite", supportsSearch: true, dailyLimit: 0 }
+    }
+  }).availableModels.lite.dailyLimit, 500);
   assert.strictEqual(normalizeChatCommand("gemini --sync-models"), "/sync-models");
   assert.strictEqual(normalizeChatCommand("gemini --models --refresh"), "/models --refresh");
   assert.strictEqual(normalizeChatCommand("gemini -m lite"), "/model lite");
